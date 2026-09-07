@@ -1,0 +1,59 @@
+[package]
+name = "bevy_agent_harness"
+description = "Agent-friendly inspection, input injection, screenshots, log capture and headless testing for Bevy games, built on the Bevy Remote Protocol."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["bevy", "gamedev", "testing", "agent", "brp"]
+categories = ["game-development", "development-tools::testing"]
+readme = "README.md"
+include = ["src/**", "skill/**", "examples/**", "README.md", "Cargo.toml"]
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "bevy_remote",
+    "bevy_log",
+    "bevy_render",
+    "bevy_window",
+    "bevy_winit",
+    "bevy_image",
+    "bevy_asset",
+    "bevy_state",
+    "png",
+    "multi_threaded",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+image = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["registry"] }
+clap = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
+
+# winit refuses to compile on Linux without a display backend selected.
+[target.'cfg(target_os = "linux")'.dependencies]
+bevy = { workspace = true, features = ["x11", "wayland"] }
+
+[dev-dependencies]
+bevy = { workspace = true, default-features = true }
+
+[features]
+default = ["cli"]
+# Blocking HTTP client for talking to a running game over BRP.
+client = ["dep:ureq"]
+# The `bevy-agent` command line tool (implies `client`).
+cli = ["client", "dep:clap", "dep:libc"]
+
+[[bin]]
+name = "bevy-agent"
+path = "src/bin/bevy-agent.rs"
+required-features = ["cli"]
+
+[[example]]
+name = "demo"
