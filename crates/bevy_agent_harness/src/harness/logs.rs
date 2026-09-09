@@ -194,6 +194,105 @@ impl Visit for MessageVisitor {
     }
 }
 
+// A process-wide routing slot intentionally includes Bevy worker threads. Only
+// synchronous TestApp operations are attributed; detached work needs a process.
+static TEST_SCOPE: Mutex<()> = Mutex::new(());
+static TEST_SINK: Mutex<Option<TestCapture>> = Mutex::new(None);
+thread_local! { static IN_TEST_SCOPE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+#[derive(Clone)]
+pub(crate) struct TestCapture {
+    buffer: LogBuffer,
+    filter: tracing_subscriber::filter::Targets,
+    enabled: bool,
+    available: bool,
+}
+
+impl TestCapture {
+    pub(crate) fn buffer(&self) -> LogBuffer {
+        self.buffer.clone()
+    }
+    pub(crate) fn new(enabled: bool, filter: &str) -> Self {
+        use tracing_subscriber::prelude::*;
+        static INSTALLED: OnceLock<bool> = OnceLock::new();
+        let available = enabled
+            && *INSTALLED.get_or_init(|| {
+                let installed = tracing::subscriber::set_global_default(
+                    tracing_subscriber::registry().with(TestLayer),
+                )
+                .is_ok();
+                if installed {
+                    // A pre-existing log facade logger is harmless: tracing capture
+                    // still works. Never attempt to replace the caller's logger.
+                    let _ = tracing_log::LogTracer::init();
+                }
+                installed
+            });
+        Self {
+            buffer: LogBuffer::new(10_000),
+            filter: filter
+                .parse()
+                .expect("invalid log_filter: use target=level directives"),
+            enabled,
+            available,
+        }
+    }
+
+    pub(crate) fn enter(&self) -> TestCaptureGuard {
+        if !self.enabled || !self.available {
+            return TestCaptureGuard(None);
+        }
+        assert!(
+            !IN_TEST_SCOPE.get(),
+            "nested TestApp capture scopes are unsupported; disable capture on the nested app"
+        );
+        let guard = TEST_SCOPE.lock().unwrap_or_else(|e| e.into_inner());
+        IN_TEST_SCOPE.set(true);
+        *TEST_SINK.lock().unwrap() = Some(self.clone());
+        TestCaptureGuard(Some(guard))
+    }
+
+    pub(crate) fn logs(&self) -> Vec<LogEntry> {
+        assert!(self.enabled, "TestApp log capture is disabled");
+        assert!(
+            self.available,
+            "TestApp log capture unavailable: another tracing subscriber is already installed; use a dedicated test process or disable capture"
+        );
+        assert_eq!(
+            self.buffer.dropped(),
+            0,
+            "TestApp log capture overflowed; error assertions would be incomplete"
+        );
+        self.buffer.snapshot()
+    }
+}
+
+pub(crate) struct TestCaptureGuard(Option<std::sync::MutexGuard<'static, ()>>);
+impl Drop for TestCaptureGuard {
+    fn drop(&mut self) {
+        if self.0.is_some() {
+            *TEST_SINK.lock().unwrap() = None;
+            IN_TEST_SCOPE.set(false);
+        }
+    }
+}
+
+struct TestLayer;
+impl<S: Subscriber> Layer<S> for TestLayer {
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let sink = TEST_SINK.lock().unwrap().clone();
+        if let Some(sink) = sink {
+            let meta = event.metadata();
+            if sink.filter.would_enable(meta.target(), meta.level()) {
+                let mut visitor = MessageVisitor::default();
+                event.record(&mut visitor);
+                sink.buffer
+                    .push(meta.level().as_str(), meta.target(), visitor.finish());
+            }
+        }
+    }
+}
+
 // ---- BRP handlers ---------------------------------------------------------
 
 #[derive(Deserialize, Default)]

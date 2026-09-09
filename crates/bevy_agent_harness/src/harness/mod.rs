@@ -2,6 +2,7 @@
 
 pub mod input;
 pub mod logs;
+mod observe;
 pub mod screenshot;
 pub mod step;
 
@@ -81,6 +82,7 @@ impl Plugin for AgentHarnessPlugin {
             );
         } else {
             let remote = RemotePlugin::default()
+                .with_watching_method_main("world.observe+watch", observe::watch)
                 .with_method_main("harness.status", status)
                 .with_method_main("harness.input", input::inject_batch)
                 .with_method_main("harness.input.key", input::inject_key)

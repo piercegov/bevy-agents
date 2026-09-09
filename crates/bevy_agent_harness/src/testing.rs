@@ -33,7 +33,7 @@ use bevy::time::TimeUpdateStrategy;
 use bevy::window::{ExitCondition, PrimaryWindow, WindowResolution};
 
 use crate::harness::input::{InputAction, InputQueue};
-use crate::harness::logs::{LogBuffer, LogEntry, global_buffer};
+use crate::harness::logs::{LogEntry, TestCapture};
 
 /// Builder for [`TestApp`].
 pub struct TestAppBuilder {
@@ -43,6 +43,7 @@ pub struct TestAppBuilder {
     render: bool,
     golden_dir: Option<PathBuf>,
     log_filter: String,
+    capture_logs: bool,
 }
 
 impl Default for TestAppBuilder {
@@ -54,6 +55,7 @@ impl Default for TestAppBuilder {
             render: false,
             golden_dir: None,
             log_filter: "warn,bevy_agent_harness=info".into(),
+            capture_logs: true,
         }
     }
 }
@@ -80,23 +82,26 @@ impl TestAppBuilder {
         self.golden_dir = Some(dir.into());
         self
     }
-    /// `RUST_LOG`-style filter for the captured log. Default `warn`.
+    /// Target/level filter for captured logs (e.g. `warn,my_game=debug`).
+    /// Span/field filter directives are not supported.
     pub fn log_filter(mut self, filter: impl Into<String>) -> Self {
         self.log_filter = filter.into();
         self
     }
 
+    /// Disable capture when integrating with an existing subscriber or detached tasks.
+    pub fn capture_logs(mut self, enabled: bool) -> Self {
+        self.capture_logs = enabled;
+        self
+    }
+
     pub fn build(self) -> TestApp {
+        let capture = TestCapture::new(self.capture_logs, &self.log_filter);
+        let _capture_scope = capture.enter();
         let mut app = App::new();
         let window = Window {
             resolution: WindowResolution::new(self.width, self.height),
             title: "bevy_agent_harness TestApp".into(),
-            ..default()
-        };
-        let log_plugin = bevy::log::LogPlugin {
-            filter: self.log_filter.clone(),
-            level: bevy::log::Level::TRACE,
-            custom_layer: crate::harness::logs::log_layer,
             ..default()
         };
 
@@ -113,7 +118,7 @@ impl TestAppBuilder {
                         exit_condition: ExitCondition::DontExit,
                         ..default()
                     })
-                    .set(log_plugin)
+                    .disable::<bevy::log::LogPlugin>()
                     .set(RenderPlugin {
                         synchronous_pipeline_compilation: true,
                         ..default()
@@ -143,7 +148,6 @@ impl TestAppBuilder {
                 bevy::app::TaskPoolPlugin::default(),
                 bevy::diagnostic::FrameCountPlugin,
                 bevy::time::TimePlugin,
-                log_plugin,
                 bevy::transform::TransformPlugin,
                 bevy::input::InputPlugin,
                 WindowPlugin {
@@ -158,9 +162,7 @@ impl TestAppBuilder {
 
         app.insert_resource(TimeUpdateStrategy::ManualDuration(self.dt));
         app.add_plugins(crate::harness::input::plugin);
-        if !app.world().contains_resource::<LogBuffer>() {
-            app.insert_resource(global_buffer().clone());
-        }
+        app.insert_resource(capture.buffer());
 
         let golden_dir = self.golden_dir.unwrap_or_else(|| {
             std::env::var_os("CARGO_MANIFEST_DIR")
@@ -174,7 +176,7 @@ impl TestAppBuilder {
             dt: self.dt,
             started: false,
             render,
-            log_start: global_buffer().next_seq(),
+            capture,
             golden_dir,
         }
     }
@@ -222,7 +224,7 @@ pub struct TestApp {
     dt: Duration,
     started: bool,
     render: Option<RenderState>,
-    log_start: u64,
+    capture: TestCapture,
     golden_dir: PathBuf,
 }
 
@@ -255,6 +257,13 @@ impl TestApp {
     pub fn app_mut(&mut self) -> &mut App {
         &mut self.app
     }
+    /// Configure or drive the underlying app with log capture enabled.
+    /// The closure must finish its worker tasks before returning. Do not invoke
+    /// another capture-enabled TestApp from inside this closure or its systems.
+    pub fn with_app<R>(&mut self, f: impl FnOnce(&mut App) -> R) -> R {
+        let _capture_scope = self.capture.enter();
+        f(&mut self.app)
+    }
     pub fn world(&self) -> &World {
         self.app.world()
     }
@@ -268,6 +277,7 @@ impl TestApp {
             !self.started,
             "add_plugins must be called before the first advance()"
         );
+        let _capture_scope = self.capture.enter();
         self.app.add_plugins(plugins);
         self
     }
@@ -298,6 +308,7 @@ impl TestApp {
 
     /// Run `frames` full frames (`app.update()`), each advancing virtual time by `dt`.
     pub fn advance(&mut self, frames: u32) -> &mut Self {
+        let _capture_scope = self.capture.enter();
         self.ensure_started();
         for _ in 0..frames {
             self.app.update();
@@ -317,6 +328,7 @@ impl TestApp {
         max_frames: u32,
         mut pred: impl FnMut(&mut World) -> bool,
     ) -> Result<u32, String> {
+        let _capture_scope = self.capture.enter();
         self.ensure_started();
         for i in 0..max_frames {
             if pred(self.app.world_mut()) {
@@ -492,8 +504,14 @@ impl TestApp {
         self.get::<C>(entity).is_some()
     }
 
-    pub fn is_alive(&self, entity: Entity) -> bool {
+    /// Whether this entity still exists, regardless of game-specific death markers.
+    pub fn entity_exists(&self, entity: Entity) -> bool {
         self.app.world().get_entity(entity).is_ok()
+    }
+
+    /// Compatibility alias for [`Self::entity_exists`]; does not check health/death state.
+    pub fn is_alive(&self, entity: Entity) -> bool {
+        self.entity_exists(entity)
     }
 
     /// Assert a predicate on a component, with a helpful panic message.
@@ -582,9 +600,11 @@ impl TestApp {
 
     // ---- logs --------------------------------------------------------------
 
-    /// Log entries emitted since this `TestApp` was created (process-global buffer).
+    /// Logs captured during construction, add_plugins, and frame advancement.
+    /// Capture scopes are serialized across TestApps, including their worker systems.
+    /// Detached tasks and raw app/world access require caller-managed process isolation.
     pub fn logs(&self) -> Vec<LogEntry> {
-        global_buffer().since(self.log_start)
+        self.capture.logs()
     }
 
     /// Entries at `WARN` or `ERROR`.
@@ -630,6 +650,7 @@ impl TestApp {
             .as_ref()
             .map(|r| r.target.clone())
             .expect("screenshot() requires TestApp::with_rendering / builder().render(true)");
+        let _capture_scope = self.capture.enter();
         self.ensure_started();
         let slot: Arc<Mutex<Option<Image>>> = Arc::new(Mutex::new(None));
         let sink = slot.clone();

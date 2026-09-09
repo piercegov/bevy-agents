@@ -123,6 +123,43 @@ fn title_screen_looks_right() {
   Missing golden files are created on first run; `UPDATE_GOLDEN=1` rewrites them; failures write
   `tests/golden/__failures__/<name>.actual.png` and `.diff.png`.
 
+Use ordinary `App`/`MinimalPlugins` tests for small rules. Use TestApp for scheduling,
+input, physics, and integration; launch the game only when live behavior or rendering
+needs verification.
+
+TestApp captures logs during construction, `add_plugins`, `with_app`, frame advancement,
+and screenshots. Each app has its own buffer and target/level filter. Capture scopes
+are serialized process-wide so synchronous Bevy worker logs reach the active app.
+Detached/background work that outlives those scopes requires a dedicated process;
+never run another capture-enabled TestApp from inside a capture scope or its systems.
+Raw `app_mut()`/`world_mut()` operations are outside capture: use `with_app` when their
+logs matter. An existing tracing subscriber or overflow makes log reads/assertions
+fail explicitly. Use `TestApp::builder().capture_logs(false)` when capture is unwanted.
+Filters accept `warn,my_game=debug`, not span/field directives.
+
+For headless physics that reads mesh asset messages, initialize the asset type before
+adding dependent plugins (no renderer required):
+
+```rust,ignore
+app.with_app(|app| {
+    app.init_asset::<Mesh>();
+    // Initialize StandardMaterial too only if your game systems require it.
+    app.add_plugins(MyPhysicsPlugin);
+});
+```
+
+Do this before populating assets; do not reinitialize an already configured asset type.
+`entity_exists(entity)` checks ECS existence, including entities with a game's `Dead`
+marker. `is_alive` remains a compatibility alias with the same meaning.
+
+The harness replaces Bevy 0.19.1's `world.observe+watch` handler to return serialization
+errors as data instead of panicking. It retains at most 1024 events per event/entity
+key and 64 keys per world; overflow is reported as a `$dropped` error record. Successful
+payloads retain Bevy's format. Keys persist for the world's lifetime, and readers of
+the same key share a draining queue. This is live observation, not a durable event
+recorder. Events need registered `ReflectEvent` metadata and serializable fields;
+nonreflectable events need an application adapter.
+
 Rendering tests need a wgpu adapter. On a headless CI box use lavapipe (`mesa-vulkan-drivers`)
 or SwiftShader, or keep rendering tests behind a feature.
 

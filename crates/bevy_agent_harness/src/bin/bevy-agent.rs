@@ -541,13 +541,7 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 let comps = client.resolve_components(&components)?;
                 let r = client.get_components(e, &comps, false)?;
-                let mut m = r["components"].as_object().cloned().unwrap_or_default();
-                if let Some(errors) = r["errors"].as_object() {
-                    for (k, err) in errors {
-                        m.insert(k.clone(), json!({ "$error": err["message"] }));
-                    }
-                }
-                Value::Object(m)
+                Value::Object(bevy_agent_harness::client::component_results(&r))
             };
             if !out.json {
                 println!("entity {} ({})", e, format_entity(e));

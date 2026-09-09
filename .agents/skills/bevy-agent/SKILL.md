@@ -36,7 +36,16 @@ App::new()
 
 Components and resources you want to see must be reflectable: `#[derive(Reflect)]`,
 `#[reflect(Component)]` (or `Resource`), and `app.register_type::<T>()`. If `bevy-agent get`
-shows `"$error"` for a component or `ls --with Foo` cannot resolve `Foo`, this is why.
+shows `"$error"`, inspect `$code`/`$status` and the message: a missing component is
+separate from an unknown type or unreadable nested value. Registration alone cannot
+serialize opaque third-party data; expose a small reflectable debug summary when needed.
+Nested values/handles may need serialization support. `ls --with Foo` also needs type registration.
+
+## Choose the smallest useful verification
+
+Use ordinary `App`/`MinimalPlugins` tests for small rules. Use TestApp for scheduling,
+input, physics and integration. A full game launch is needed for live/rendering changes,
+not trivial rules or documentation changes.
 
 ## The verification loop
 
@@ -124,7 +133,17 @@ fn jump_leaves_the_ground() {
   advance the app so the input is already processed when they return.
 - Find things with `single::<C>()`, `entities_with::<C>()`, `find_by_name("Player")`.
 - Read state with `get`, `component`, `resource`, `world()`; drive it with `run_until(max, |world| ...)`.
-- Logs from the run: `logs()`, `log_problems()`, `assert_no_log_errors()`.
+- Logs: `logs()`, `log_problems()`, `assert_no_log_errors()`. Each TestApp has its own
+  buffer/filter; construction, `add_plugins`, `with_app`, advancement and screenshots
+  enter serialized capture scopes that include synchronous Bevy workers. Raw app/world
+  access is outside capture; use `with_app(|app| ...)` for captured configuration.
+  Detached tasks need dedicated-process isolation. Do not nest capture-enabled TestApps
+  inside capture scopes/systems. Existing subscribers and overflow fail log reads
+  explicitly; `.capture_logs(false)` disables capture when unwanted.
+- `entity_exists` checks ECS existence; `is_alive` is a compatibility alias, not a health check.
+- For headless physics that reads `AssetEvent<Mesh>`, call
+  `app.with_app(|app| { app.init_asset::<Mesh>(); });` before dependent plugins and before
+  populating assets. Add other asset types only as required; a renderer is unnecessary.
 - Visuals: `TestApp::with_rendering(640, 360)` then `screenshot()` or `assert_golden("name")`.
   Golden PNGs live in `tests/golden/`; the first run creates them, `UPDATE_GOLDEN=1` rewrites
   them, and a failure writes `tests/golden/__failures__/<name>.actual.png` and `.diff.png` for

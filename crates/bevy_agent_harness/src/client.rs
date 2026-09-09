@@ -283,20 +283,7 @@ impl BrpClient {
     pub fn get_all_components(&self, entity: u64) -> Result<Map<String, Value>> {
         let names = self.list_components(Some(entity))?;
         let v = self.get_components(entity, &names, false)?;
-        let mut map = Map::new();
-        if let Some(obj) = v["components"].as_object() {
-            map.extend(obj.clone());
-        }
-        // Components that exist but cannot be serialized still show up as null.
-        if let Some(errors) = v["errors"].as_object() {
-            for (k, e) in errors {
-                map.insert(
-                    k.clone(),
-                    json!({ "$error": e["message"].as_str().unwrap_or("unreflectable") }),
-                );
-            }
-        }
-        Ok(map)
+        Ok(component_results(&v))
     }
 
     pub fn query(&self, data: Value, filter: Value, strict: bool) -> Result<Vec<Value>> {
@@ -648,5 +635,52 @@ mod tests {
                 .contains("ambiguous")
         );
         assert!(resolve_in("Nope", &reg, "component").is_err());
+    }
+}
+
+/// Flatten a lenient BRP response without discarding diagnostic codes or data.
+/// Presence is only definitive for COMPONENT_NOT_PRESENT; list/read can race.
+pub fn component_results(response: &Value) -> Map<String, Value> {
+    let mut result = response["components"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(errors) = response["errors"].as_object() {
+        for (name, error) in errors {
+            let missing = error["code"].as_i64()
+                == Some(i64::from(bevy::remote::error_codes::COMPONENT_NOT_PRESENT));
+            result.insert(
+                name.clone(),
+                json!({
+                    "$error": error["message"].as_str().unwrap_or("component inspection failed"),
+                    "$code": error["code"],
+                    "$data": error["data"],
+                    "$status": if missing { "missing" } else { "unreadable_or_unknown" },
+                }),
+            );
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod component_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn flattening_preserves_partial_success_and_error_details() {
+        let result = component_results(&json!({
+            "components": {"Health": 42},
+            "errors": {
+                "Missing": {"code": -23403, "message": "not present"},
+                "Opaque": {"code": -23402, "message": "cannot serialize", "data": {"field": "handle"}}
+            }
+        }));
+        assert_eq!(result["Health"], 42);
+        assert_eq!(result["Missing"]["$status"], "missing");
+        assert_eq!(result["Opaque"]["$code"], -23402);
+        assert_eq!(result["Opaque"]["$error"], "cannot serialize");
+        assert_eq!(result["Opaque"]["$data"]["field"], "handle");
+        assert_eq!(result["Opaque"]["$status"], "unreadable_or_unknown");
     }
 }
