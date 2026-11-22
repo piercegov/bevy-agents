@@ -2,12 +2,12 @@
 //! messages (`KeyboardInput`, `MouseButtonInput`, `CursorMoved`, ...) at the
 //! start of the next frame, so game code cannot tell them apart from real input.
 
+use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput, NativeKey};
 use bevy::input::mouse::{MouseButtonInput, MouseMotion, MouseScrollUnit, MouseWheel};
-use bevy::input::{ButtonState, InputSystems};
 use bevy::prelude::*;
 use bevy::remote::BrpResult;
-use bevy::window::{CursorMoved, PrimaryWindow};
+use bevy::window::{CursorMoved, PrimaryWindow, WindowEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -117,8 +117,12 @@ impl InputQueue {
 }
 
 pub(crate) fn plugin(app: &mut App) {
-    app.init_resource::<InputQueue>()
-        .add_systems(PreUpdate, deliver_inputs.before(InputSystems));
+    // In `First`, ahead of picking's input pass (which runs there) and of
+    // `InputSystems` in `PreUpdate`, so both see an action in the frame it is delivered.
+    app.init_resource::<InputQueue>().add_systems(
+        First,
+        deliver_inputs.before(bevy::picking::PickingSystems::Input),
+    );
 }
 
 fn deliver_inputs(
@@ -129,7 +133,15 @@ fn deliver_inputs(
     mut cursor: MessageWriter<CursorMoved>,
     mut motion: MessageWriter<MouseMotion>,
     mut wheel: MessageWriter<MouseWheel>,
+    // winit also reports every input through this combined stream, and some
+    // consumers (bevy_picking, and so UI clicks) read only that.
+    mut window_events: Option<ResMut<Messages<WindowEvent>>>,
 ) {
+    let mut mirror = |event: WindowEvent| {
+        if let Some(events) = window_events.as_mut() {
+            events.write(event);
+        }
+    };
     if queue.is_empty() {
         return;
     }
@@ -168,21 +180,25 @@ fn deliver_inputs(
                     (Key::Space, ButtonState::Pressed) => Some(" ".into()),
                     _ => None,
                 };
-                keys.write(KeyboardInput {
+                let event = KeyboardInput {
                     key_code: key,
                     logical_key,
                     state,
                     text,
                     repeat: false,
                     window,
-                });
+                };
+                mirror(event.clone().into());
+                keys.write(event);
             }
             InputAction::MouseButton { button, state } => {
-                buttons.write(MouseButtonInput {
+                let event = MouseButtonInput {
                     button,
                     state,
                     window,
-                });
+                };
+                mirror(event.into());
+                buttons.write(event);
             }
             InputAction::Cursor { position } => {
                 let position = Vec2::from(position);
@@ -190,21 +206,30 @@ fn deliver_inputs(
                 if let Ok((_, mut win, _)) = windows.get_mut(window) {
                     delta = win.cursor_position().map(|prev| position - prev);
                     let scale = win.scale_factor() as f64;
-                    win.set_physical_cursor_position(Some(position.as_dvec2() * scale));
+                    // Not flagged as a change on purpose: bevy_winit answers a changed
+                    // cursor position by warping the real OS pointer, which moves the
+                    // user's mouse on X11/Windows/macOS and logs an error on Wayland.
+                    // Game code learns about the move from `CursorMoved`, like a real one.
+                    win.bypass_change_detection()
+                        .set_physical_cursor_position(Some(position.as_dvec2() * scale));
                 }
-                cursor.write(CursorMoved {
+                let event = CursorMoved {
                     window,
                     position,
                     delta,
-                });
+                };
+                mirror(event.clone().into());
+                cursor.write(event);
             }
             InputAction::Motion { delta } => {
-                motion.write(MouseMotion {
+                let event = MouseMotion {
                     delta: Vec2::from(delta),
-                });
+                };
+                mirror(event.into());
+                motion.write(event);
             }
             InputAction::Scroll { x, y, unit } => {
-                wheel.write(MouseWheel {
+                let event = MouseWheel {
                     unit: match unit {
                         ScrollUnit::Line => MouseScrollUnit::Line,
                         ScrollUnit::Pixel => MouseScrollUnit::Pixel,
@@ -213,7 +238,9 @@ fn deliver_inputs(
                     y,
                     window,
                     phase: bevy::input::touch::TouchPhase::Moved,
-                });
+                };
+                mirror(event.into());
+                wheel.write(event);
             }
         }
     }

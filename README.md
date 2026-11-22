@@ -35,10 +35,11 @@ use bevy::log::LogPlugin;
 use bevy_agent_harness::AgentHarnessPlugin;
 
 App::new()
-    .add_plugins(DefaultPlugins.set(LogPlugin {
+    // agent_plugins: lets `bevy-agent run --headless` start the game without a window
+    .add_plugins(bevy_agent_harness::agent_plugins(DefaultPlugins.set(LogPlugin {
         custom_layer: bevy_agent_harness::log_layer,   // optional: enables `bevy-agent logs`
         ..default()
-    }))
+    })))
     .add_plugins(AgentHarnessPlugin::default())        // BRP on http://127.0.0.1:15702
     .run();
 ```
@@ -55,7 +56,11 @@ cargo run -p bevy_agent_harness --example demo     # a small game to play with
 ```
 
 ```text
-bevy-agent status                       frame, fps, time, pause state, windows, cameras
+bevy-agent run -- cargo run             start the game in the background, wait until it answers
+bevy-agent run --headless --size 1280x720 -- cargo run     no window, fixed size, no real input
+bevy-agent run --restart -- cargo run   stop the running game first (do this after a rebuild)
+bevy-agent stop                         clean exit, then kill
+bevy-agent status                       frame, fps, time, pause state, windows, cameras, pid/binary
 bevy-agent ls --short                   entity tree with names and components
 bevy-agent get @Player                  all components of the entity named "Player"
 bevy-agent get 424v0 Transform Health   specific components (short names resolve automatically)
@@ -86,6 +91,16 @@ bevy-agent call <method> '<json>'       any BRP method, raw
 Global flags: `--url` (or `BEVY_AGENT_URL`), `--json` for machine-readable output, `--short` to
 strip module paths from type names, `--timeout`. Entities can be written as the u64 BRP id, as
 `index v generation` (what Bevy prints), or as `@Name`.
+
+`run` fails with the tail of the game's output if the command exits or the game never answers,
+and refuses to start while another game is answering on the same URL. Every command warns when
+the game binary on disk is newer than the running process, so a forgotten restart cannot pass
+for a verified change. `logs` fails with instructions (instead of printing nothing) when the
+game did not install `log_layer`.
+
+Headless runs need `agent_plugins(...)` around the game's plugin group. Cameras render to an
+offscreen image that `screenshot` captures; UI is drawn and picking (`Pointer<Click>`) works,
+but bevy_ui's `Interaction` does not react to the cursor without a real window.
 
 Exit codes are usable as checks: `get @Player Stunned` prints what it could read and exits 1
 (with the reason on stderr) when a component you named is missing or unreadable, so

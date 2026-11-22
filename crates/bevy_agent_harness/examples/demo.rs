@@ -1,7 +1,7 @@
 //! A tiny 2D game to try `bevy-agent` against.
 //!
 //! ```text
-//! cargo run -p bevy_agent_harness --example demo
+//! bevy-agent run -- cargo run -p bevy_agent_harness --example demo
 //! bevy-agent status
 //! bevy-agent ls --short
 //! bevy-agent key Space          # player takes damage
@@ -11,6 +11,7 @@
 //! bevy-agent event read PlayerDamaged   # start recording, then `key space`, then read again
 //! bevy-agent screenshot -o /tmp/demo.png
 //! bevy-agent logs
+//! bevy-agent stop
 //! ```
 
 use bevy::log::LogPlugin;
@@ -61,10 +62,13 @@ struct SpawnCoin {
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins.set(LogPlugin {
-            custom_layer: bevy_agent_harness::log_layer,
-            ..default()
-        }))
+        // `agent_plugins` lets `bevy-agent run --headless` start this without a window.
+        .add_plugins(bevy_agent_harness::agent_plugins(DefaultPlugins.set(
+            LogPlugin {
+                custom_layer: bevy_agent_harness::log_layer,
+                ..default()
+            },
+        )))
         .add_plugins(AgentHarnessPlugin::default())
         .register_type::<Player>()
         .register_type::<Health>()

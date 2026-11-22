@@ -133,10 +133,23 @@ pub fn global_buffer() -> &'static LogBuffer {
 
 /// Use as `LogPlugin { custom_layer: bevy_agent_harness::log_layer, .. }`.
 pub fn log_layer(app: &mut App) -> Option<BoxedLayer> {
+    LAYER_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
     let buffer = global_buffer().clone();
     app.insert_resource(buffer.clone());
     Some(Box::new(CaptureLayer { buffer }))
 }
+
+static LAYER_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether [`log_layer`] was handed to `LogPlugin` in this process. Without it
+/// nothing feeds the buffer, and an empty log must not be read as "no errors".
+pub fn capture_installed() -> bool {
+    LAYER_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub(crate) const NOT_ENABLED: &str = "log capture is not enabled in this game, so its logs cannot be read here (this does \
+     not mean there were no errors). Enable it with `DefaultPlugins.set(LogPlugin { custom_layer: \
+     bevy_agent_harness::log_layer, ..default() })`, or read the game's stdout/stderr instead";
 
 pub(crate) fn ensure_buffer(app: &mut App, capacity: usize) {
     if !app.world().contains_resource::<LogBuffer>() {
@@ -327,11 +340,17 @@ fn level_rank(level: &str) -> u8 {
 /// `harness.logs`
 pub fn get_logs(In(params): In<Option<Value>>, buffer: Option<Res<LogBuffer>>) -> BrpResult {
     let p: LogsParams = parse_params(params)?;
-    let buffer = buffer.ok_or_else(|| BrpError {
+    let not_enabled = || BrpError {
         code: bevy::remote::error_codes::INTERNAL_ERROR,
-        message: "log capture is not enabled; set `LogPlugin { custom_layer: bevy_agent_harness::log_layer, .. }`".into(),
+        message: NOT_ENABLED.into(),
         data: None,
-    })?;
+    };
+    let buffer = buffer.ok_or_else(not_enabled)?;
+    // The plugin always provides a buffer, but only the layer fills it. Entries
+    // pushed by hand (`LogBuffer::push`) are still served.
+    if !capture_installed() && buffer.next_seq() == 0 {
+        return Err(not_enabled());
+    }
     let max_rank = p.level.as_deref().map(level_rank).unwrap_or(4);
     let next = buffer.next_seq();
     let mut entries: Vec<LogEntry> = buffer

@@ -10,7 +10,8 @@ the raw protocol does not.
 
 | method | params | result |
 |---|---|---|
-| `harness.status` | none | `{ frame, fps, elapsed, real_elapsed, delta, paused, speed, stepping, entities, windows: [{entity, primary, width, height, physical_width, physical_height, scale_factor, cursor, focused}], cameras: [{entity, name, active, order, target, size}] }` |
+| `harness.status` | none | `{ frame, fps, elapsed, real_elapsed, delta, paused, speed, stepping, entities, windows: [{entity, primary, width, height, physical_width, physical_height, scale_factor, cursor, focused}], cameras: [{entity, name, active, order, target, size}], process: {pid, exe, uptime, stale}, headless, log_capture }`. `stale` is true when the executable on disk is newer than the running process |
+| `harness.exit` | none | `null`; the app exits cleanly after the current frame |
 | `harness.input.key` | `{ key?: KeyCode, keys?: [KeyCode], state?: "tap"\|"press"\|"release", hold_frames?: 1, delay?: 0 }` | `{ queued, horizon_frames }` |
 | `harness.input.mouse` | `{ button?: "Left", state?: "tap"\|"press"\|"release", position?: [x, y], hold_frames?, delay? }` | `{ queued, horizon_frames }` |
 | `harness.input.cursor` | `{ position?: [x, y], delta?: [dx, dy], delay? }` | `{ queued, horizon_frames }` |
@@ -31,7 +32,9 @@ the raw protocol does not.
 Timing notes:
 
 - Input handlers run after `Last`; queued actions are delivered at the start of the next frame
-  (before `InputSystems`), so a `delay` of 0 means "next frame". `horizon_frames` is how many
+  (in `First`, before picking's input pass and `InputSystems`), both as the specific messages
+  (`KeyboardInput`, `MouseButtonInput`, `CursorMoved`, ...) and as `WindowEvent`, so a `delay` of
+  0 means "next frame". `horizon_frames` is how many
   frames until the last queued action fires; wait `horizon_frames + 1` frames to be sure the
   game has reacted.
 - `until_frame` from `harness.step` accounts for the frame in flight; pass it straight to
@@ -55,5 +58,12 @@ Events, messages and schedules:
 | `world.observe+watch` | `{ event: type_path, entity?: entity }` | stream of `[value, ...]` batches; `{"$error", "$dropped"}` entries mark overflow or unserializable events. Shares its recording with `harness.events` |
 | `schedule.list` | none | `{ schedule_labels, empty_schedule_labels, unavailable_schedule_labels }` |
 | `schedule.graph` | `{ schedule_label: "Update" }` | `{ schedule_data: { name, systems: [{name, exclusive, ...}], system_sets, hierarchy: [[set, node]], dependency: [[first, second]], components, conflicts } }` where a node is `{"System": i}` or `{"SystemSet": i}` |
+
+`harness.logs` returns an error instead of an empty list when the game did not install
+`bevy_agent_harness::log_layer`.
+
+Environment read by the game: `BEVY_AGENT_HEADLESS=1` (with `agent_plugins(...)`) runs without a
+window; `BEVY_AGENT_SIZE=1280x720` sets the headless window and render size. `bevy-agent run
+--headless --size` sets both.
 
 `bevy-agent methods` lists what the running game actually exposes.

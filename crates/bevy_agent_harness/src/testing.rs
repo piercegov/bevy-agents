@@ -128,19 +128,10 @@ impl TestAppBuilder {
                     .disable::<PipelinedRenderingPlugin>(),
             );
 
-            use bevy::render::render_resource::{TextureFormat, TextureUsages};
-            let mut image = Image::new_target_texture(
+            let handle = crate::harness::headless::install_offscreen_target(
+                &mut app,
                 self.width,
                 self.height,
-                TextureFormat::Rgba8UnormSrgb,
-                None,
-            );
-            image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
-            let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image);
-            app.insert_resource(OffscreenTarget(handle.clone()));
-            app.add_systems(
-                PostUpdate,
-                retarget_cameras.before(bevy::camera::CameraUpdateSystems),
             );
             render = Some(RenderState { target: handle });
         } else {
@@ -182,35 +173,8 @@ impl TestAppBuilder {
     }
 }
 
-#[derive(Resource, Clone)]
-struct OffscreenTarget(Handle<Image>);
-
 struct RenderState {
     target: Handle<Image>,
-}
-
-fn retarget_cameras(
-    target: Res<OffscreenTarget>,
-    mut cameras: Query<(Entity, Option<&mut bevy::camera::RenderTarget>), With<Camera>>,
-    mut commands: Commands,
-) {
-    use bevy::camera::{ImageRenderTarget, RenderTarget};
-    for (entity, rt) in cameras.iter_mut() {
-        match rt {
-            Some(mut rt) => {
-                if matches!(*rt, RenderTarget::Window(_)) {
-                    *rt = RenderTarget::Image(ImageRenderTarget::from(target.0.clone()));
-                }
-            }
-            None => {
-                commands
-                    .entity(entity)
-                    .insert(RenderTarget::Image(ImageRenderTarget::from(
-                        target.0.clone(),
-                    )));
-            }
-        }
-    }
 }
 
 /// A Bevy [`App`] driven frame-by-frame from a test, with input injection,

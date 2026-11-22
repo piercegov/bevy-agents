@@ -49,6 +49,7 @@ pub mod testing;
 pub mod client;
 
 pub use harness::AgentHarnessPlugin;
+pub use harness::headless::agent_plugins;
 pub use harness::logs::{LogBuffer, LogEntry, log_layer};
 
 /// Fully-qualified type paths of components the tools use frequently.

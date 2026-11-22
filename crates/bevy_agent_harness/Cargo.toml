@@ -20,6 +20,7 @@ bevy = { workspace = true, features = [
     "bevy_image",
     "bevy_asset",
     "bevy_state",
+    "bevy_picking",
     "png",
     "multi_threaded",
 ] }

@@ -42,7 +42,34 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Frame, time, pause state, entity count, windows and cameras.
+    /// Start the game in the background and wait until it answers, e.g.
+    /// `bevy-agent run -- cargo run`. Fails (with the end of the game's output)
+    /// if the command exits or does not come up in time, and refuses to start
+    /// while another game is answering on the same URL.
+    Run {
+        /// Run without a window: no real input reaches the game and the render size is
+        /// fixed. The game must wrap its plugins in `bevy_agent_harness::agent_plugins`.
+        #[arg(long)]
+        headless: bool,
+        /// Window / render size for --headless, e.g. 1280x720.
+        #[arg(long, requires = "headless")]
+        size: Option<String>,
+        /// Stop a game that is already running on this URL first.
+        #[arg(long)]
+        restart: bool,
+        /// File for the game's stdout and stderr (default: a per-port file in the temp dir).
+        #[arg(long)]
+        log: Option<PathBuf>,
+        /// Seconds to wait for the game to answer, including any compile time.
+        #[arg(long, default_value_t = 600.0)]
+        ready_timeout: f64,
+        /// The command that starts the game.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Stop the game answering on this URL (clean exit, then kill). Succeeds if none is running.
+    Stop,
+    /// Frame, time, pause state, entity count, windows, cameras and the game process.
     Status,
     /// List the remote methods the game exposes.
     Methods,
@@ -433,10 +460,234 @@ fn main() {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let cli = Cli::parse();
+    let url = cli.url.clone();
     if let Err(e) = run(cli) {
-        eprintln!("error: {e:#}");
+        let text = format!("{e:#}");
+        eprintln!("error: {text}");
+        let log = default_log_path(&url);
+        if text.contains("could not reach") && log.exists() {
+            eprintln!(
+                "hint: if the game crashed, the output of the last `bevy-agent run` is in {}",
+                log.display()
+            );
+        }
         std::process::exit(1);
     }
+}
+
+/// Where `run` sends the game's output unless `--log` is given.
+fn default_log_path(url: &str) -> PathBuf {
+    let port = url
+        .trim_end_matches('/')
+        .rsplit(':')
+        .next()
+        .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or("default");
+    std::env::temp_dir().join(format!("bevy-agent-{port}.log"))
+}
+
+fn log_tail(path: &std::path::Path, lines: usize) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let all: Vec<&str> = text.lines().collect();
+    all[all.len().saturating_sub(lines)..].join("\n")
+}
+
+/// `pid 123  target/debug/game  up 4.2s` from a status value.
+fn describe_process(status: &Value) -> String {
+    let p = &status["process"];
+    match p["pid"].as_u64() {
+        Some(pid) => format!(
+            "pid {pid}  {}  up {:.1}s",
+            p["exe"].as_str().unwrap_or("?"),
+            p["uptime"].as_f64().unwrap_or(0.0)
+        ),
+        None => "unknown process (older bevy_agent_harness in the game)".into(),
+    }
+}
+
+const STALE_WARNING: &str = "the game binary was rebuilt after this process started, so you are \
+    looking at the OLD build. Restart it (`bevy-agent run --restart -- <command>`) before \
+    verifying a change";
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks for existence.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn force_kill(pid: u32, group: bool) {
+    let target = pid as libc::pid_t;
+    // SAFETY: plain kill(2) on a pid (or its process group) we started or were told about.
+    unsafe {
+        libc::kill(if group { -target } else { target }, libc::SIGKILL);
+    }
+}
+#[cfg(not(unix))]
+fn force_kill(_pid: u32, _group: bool) {}
+
+/// Whether `pid` belongs to the process group led by the command `run` spawned.
+#[cfg(unix)]
+fn started_by(pid: u64, leader: u32) -> bool {
+    // SAFETY: getpgid only reads process metadata.
+    unsafe { libc::getpgid(pid as libc::pid_t) == leader as libc::pid_t }
+}
+#[cfg(not(unix))]
+fn started_by(_pid: u64, _leader: u32) -> bool {
+    true
+}
+
+fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        if done() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Ask the game to exit, escalate to a kill, and wait until it is really gone.
+/// Returns a description of what was stopped, or `None` if nothing was running.
+fn stop_game(client: &BrpClient) -> Result<Option<String>> {
+    let Ok(status) = client.status() else {
+        return Ok(None);
+    };
+    let what = describe_process(&status);
+    let pid = status["process"]["pid"].as_u64().map(|p| p as u32);
+    // Older plugins have no `harness.exit`; the kill below covers them.
+    let _ = client.call("harness.exit", None);
+    let gone = |client: &BrpClient| client.status().is_err() && !pid.is_some_and(process_alive);
+    if !wait_until(Duration::from_secs(5), || gone(client)) {
+        if let Some(pid) = pid {
+            force_kill(pid, false);
+        }
+        if !wait_until(Duration::from_secs(5), || gone(client)) {
+            bail!(
+                "the game ({what}) is still answering at {}; kill it by hand",
+                client.url()
+            );
+        }
+    }
+    Ok(Some(what))
+}
+
+struct RunArgs {
+    headless: bool,
+    size: Option<String>,
+    restart: bool,
+    log: Option<PathBuf>,
+    ready_timeout: f64,
+    command: Vec<String>,
+}
+
+fn run_game(client: &BrpClient, out: &Out, args: RunArgs) -> Result<()> {
+    if let Ok(status) = client.status() {
+        if !args.restart {
+            bail!(
+                "a game is already answering at {} ({}). Stop it with `bevy-agent stop`, or pass \
+                 `run --restart`",
+                client.url(),
+                describe_process(&status)
+            );
+        }
+        stop_game(client)?;
+    }
+
+    let log = args.log.unwrap_or_else(|| default_log_path(client.url()));
+    let log = std::env::current_dir()?.join(log);
+    let file =
+        std::fs::File::create(&log).with_context(|| format!("creating {}", log.display()))?;
+    let mut cmd = std::process::Command::new(&args.command[0]);
+    cmd.args(&args.command[1..])
+        .stdin(std::process::Stdio::null())
+        .stdout(file.try_clone()?)
+        .stderr(file);
+    if args.headless {
+        cmd.env(bevy_agent_harness::harness::headless::HEADLESS_ENV, "1");
+        if let Some(size) = &args.size {
+            cmd.env(bevy_agent_harness::harness::headless::SIZE_ENV, size);
+        }
+    } else {
+        cmd.env_remove(bevy_agent_harness::harness::headless::HEADLESS_ENV);
+    }
+    #[cfg(unix)]
+    {
+        // Own process group: the game outlives this command and can be killed as a unit.
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("starting `{}`", args.command.join(" ")))?;
+    let leader = child.id();
+
+    let mut poll = BrpClient::new(client.url());
+    poll.timeout = Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + Duration::from_secs_f64(args.ready_timeout);
+    let fail = |why: String| -> anyhow::Error {
+        anyhow!(
+            "{why}\n--- last output ({}) ---\n{}",
+            log.display(),
+            log_tail(&log, 30)
+        )
+    };
+    let status = loop {
+        if let Ok(status) = poll.status() {
+            let pid = status["process"]["pid"].as_u64();
+            if pid.is_some_and(|pid| !started_by(pid, leader)) {
+                force_kill(leader, true);
+                bail!(
+                    "another game ({}) answered at {} instead of the one just started",
+                    describe_process(&status),
+                    client.url()
+                );
+            }
+            break status;
+        }
+        if let Some(exit) = child.try_wait()? {
+            return Err(fail(format!(
+                "`{}` exited ({exit}) before the game answered at {}",
+                args.command.join(" "),
+                client.url()
+            )));
+        }
+        if std::time::Instant::now() >= deadline {
+            force_kill(leader, true);
+            let _ = child.kill();
+            return Err(fail(format!(
+                "the game did not answer at {} within {}s; it was killed. Does it add \
+                 AgentHarnessPlugin on this port?",
+                client.url(),
+                args.ready_timeout
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+
+    if args.headless && status["headless"] != true {
+        stop_game(client)?;
+        force_kill(leader, true);
+        bail!(
+            "the game started in a normal window although --headless was requested, so it was \
+             stopped. Wrap its plugin group: `bevy_agent_harness::agent_plugins(DefaultPlugins)`"
+        );
+    }
+    if out.json {
+        out.value(json!({ "status": status, "log": log }));
+    } else {
+        println!("ready: {}", describe_process(&status));
+        println!("output: {}", log.display());
+        print_status(&status);
+    }
+    Ok(())
 }
 
 /// Parse `4294967298`, `2v1`, or `@Name` (exact `Name` component match).
@@ -620,7 +871,41 @@ fn run(cli: Cli) -> Result<()> {
         short: cli.short,
     };
 
+    // Verifying against a process that predates the latest build is the easiest way
+    // to "confirm" a change that is not running, so say so on every command.
+    if !matches!(cli.cmd, Cmd::Skill(_) | Cmd::Run { .. } | Cmd::Stop)
+        && let Ok(status) = client.status()
+        && status["process"]["stale"] == true
+    {
+        eprintln!("warning: {STALE_WARNING}");
+    }
+
     match cli.cmd {
+        Cmd::Run {
+            headless,
+            size,
+            restart,
+            log,
+            ready_timeout,
+            command,
+        } => run_game(
+            &client,
+            &out,
+            RunArgs {
+                headless,
+                size,
+                restart,
+                log,
+                ready_timeout,
+                command,
+            },
+        )?,
+        Cmd::Stop => match stop_game(&client)? {
+            Some(what) if out.json => out.value(json!({ "stopped": what })),
+            Some(what) => println!("stopped {what}"),
+            None if out.json => out.value(json!({ "stopped": null })),
+            None => println!("no game is running at {}", client.url()),
+        },
         Cmd::Status => {
             let s = client.status()?;
             if out.json {
@@ -925,6 +1210,7 @@ fn run(cli: Cli) -> Result<()> {
             }
             let r = client.mouse(params)?;
             finish_input(&client, &out, r, no_wait, timeout)?;
+            warn_headless_interaction(&client);
         }
         Cmd::Mouse(cmd) => {
             let r = match cmd {
@@ -941,6 +1227,7 @@ fn run(cli: Cli) -> Result<()> {
                 }))?,
             };
             finish_input(&client, &out, r, false, timeout)?;
+            warn_headless_interaction(&client);
         }
         Cmd::Logs {
             since,
@@ -1470,6 +1757,30 @@ fn finish_input(
     Ok(())
 }
 
+/// bevy_ui's `Interaction` only follows cameras that target a window, so in a
+/// headless run it never reacts to the cursor. Say so when the game uses it,
+/// instead of letting a dead button look like a bug in the game.
+fn warn_headless_interaction(client: &BrpClient) {
+    let headless = client.status().is_ok_and(|s| s["headless"] == true);
+    if !headless {
+        return;
+    }
+    let uses_interaction = client
+        .query(
+            json!({}),
+            json!({ "with": ["bevy_ui::focus::Interaction"] }),
+            false,
+        )
+        .is_ok_and(|rows| !rows.is_empty());
+    if uses_interaction {
+        eprintln!(
+            "note: headless run: bevy_ui `Interaction` components do not react to the cursor \
+             here (picking events such as `Pointer<Click>` do). Use a windowed `bevy-agent run` \
+             to check `Interaction`-driven buttons."
+        );
+    }
+}
+
 fn status_or_json(out: &Out, s: Value) {
     if out.json {
         out.value(s);
@@ -1502,6 +1813,25 @@ fn print_status(s: &Value) {
             .unwrap_or_default()
     );
     println!("entities {}", s["entities"]);
+    if s["process"].is_object() {
+        println!(
+            "process {}{}{}",
+            describe_process(s),
+            if s["headless"] == true {
+                "  headless"
+            } else {
+                ""
+            },
+            if s["process"]["stale"] == true {
+                "  STALE (binary rebuilt since start)"
+            } else {
+                ""
+            }
+        );
+    }
+    if s["log_capture"] == false {
+        println!("logs NOT captured (`bevy-agent logs` will fail; see its error for the fix)");
+    }
     if let Some(ws) = s["windows"].as_array() {
         for w in ws {
             println!(

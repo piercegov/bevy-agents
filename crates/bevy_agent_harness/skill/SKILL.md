@@ -27,12 +27,17 @@ use bevy::log::LogPlugin;
 use bevy_agent_harness::AgentHarnessPlugin;
 
 App::new()
-    .add_plugins(DefaultPlugins.set(LogPlugin {
+    // `agent_plugins` lets `bevy-agent run --headless` start the game without a window;
+    // without that flag it changes nothing.
+    .add_plugins(bevy_agent_harness::agent_plugins(DefaultPlugins.set(LogPlugin {
         custom_layer: bevy_agent_harness::log_layer, // makes `bevy-agent logs` work
         ..default()
-    }))
+    })))
     .add_plugins(AgentHarnessPlugin::default())      // BRP on http://127.0.0.1:15702
 ```
+
+Without the `custom_layer` line `bevy-agent logs` fails with an explanation (it does not
+print an empty list), and `status` shows `logs NOT captured`. Read the game's output file instead.
 
 Components and resources you want to see must be reflectable: `#[derive(Reflect)]`,
 `#[reflect(Component)]` (or `Resource`), and `app.register_type::<T>()`. If `bevy-agent get`
@@ -54,21 +59,37 @@ not trivial rules or documentation changes.
 ## The verification loop
 
 ```sh
-# 1. build and launch in the background, logging to a file
-cargo build && (cargo run > /tmp/game.log 2>&1 &)
-# 2. wait for BRP to come up (retry a few times)
-until bevy-agent status >/dev/null 2>&1; do sleep 1; done
-# 3. orient yourself
+# 1. build, launch in the background and wait until the game answers
+bevy-agent run --headless --size 1280x720 -- cargo run
+# 2. orient yourself
 bevy-agent status
 bevy-agent ls --short
-# 4. drive the game and observe
+# 3. drive the game and observe
 bevy-agent key space
 bevy-agent get @Player --short
 bevy-agent screenshot -o /tmp/shot.png     # then view the PNG
 bevy-agent logs --level warn
-# 5. always stop the game when done
-pkill -f target/debug/<binary-name>
+# 4. always stop the game when done
+bevy-agent stop
 ```
+
+`run` returns once the game answers and prints its pid and the file holding its stdout/stderr.
+It exits 1 with the last lines of that output if the command fails or the game dies during
+startup (compile error, panic), so never loop on `status` to wait. It refuses to start while
+another game answers on the same URL; after changing code use
+`bevy-agent run --restart ... -- cargo run`. If a later command says `could not reach`, the game
+has exited: read the output file named in the hint.
+
+**Stale builds.** If you rebuild while the game is running, every command prints
+`warning: the game binary was rebuilt after this process started ...` and `status` shows `STALE`.
+Nothing you observe then reflects your change; restart with `run --restart` first.
+
+**Headless or windowed.** Prefer `--headless`: no window opens, the size is exactly what you
+ask for (so click coordinates and screenshots are reproducible), and no real mouse, keyboard
+or focus change can interfere. It needs `agent_plugins(...)` in the game (see above; `run
+--headless` fails and says so if it is missing). Without `--headless` the game opens a normal
+window on the user's desktop: its size is up to the window manager, and the user's real mouse
+and keyboard reach it too, so re-check `status` for the window size before clicking.
 
 Every input command (`key`, `click`, `mouse ...`) blocks until the game has processed the
 input, so the very next `get` already reflects it. For deterministic checks of time-based logic,
@@ -107,7 +128,8 @@ bevy-agent event read PlayerDamaged --expect   # prints the events; exit 1 if th
 
 | Need | Command |
 |---|---|
-| What is running | `bevy-agent status` |
+| Start / stop the game | `bevy-agent run --headless -- cargo run`, `run --restart -- cargo run`, `bevy-agent stop` |
+| What is running | `bevy-agent status` (frame, window size, pid and binary, `STALE`, `headless`) |
 | Entity tree (names, components) | `bevy-agent ls --short`, `ls --with Enemy`, `ls --all` for internals |
 | One entity | `bevy-agent get @Player`, `get 424v0 Transform Health`, `get @Player --all` for plumbing components |
 | Query | `bevy-agent query --with Enemy -d Transform -d Health --short` |
@@ -173,7 +195,8 @@ fn jump_leaves_the_ground() {
   `app.with_app(|app| { app.init_asset::<Mesh>(); });` before dependent plugins and before
   populating assets. Add other asset types only as required; a renderer is unnecessary.
 - Visuals: `TestApp::with_rendering(640, 360)` then `screenshot()` or `assert_golden("name")`.
-  Golden PNGs live in `tests/golden/`; the first run creates them, `UPDATE_GOLDEN=1` rewrites
+  UI is drawn and `click` reaches picking observers there; `Interaction` does not react (same
+  limit as headless runs). Golden PNGs live in `tests/golden/`; the first run creates them, `UPDATE_GOLDEN=1` rewrites
   them, and a failure writes `tests/golden/__failures__/<name>.actual.png` and `.diff.png` for
   you to look at. Rendering tests need a GPU (or lavapipe/SwiftShader).
 - Components used in `TestApp` do **not** need `Reflect`; only the BRP path does.
@@ -185,7 +208,12 @@ in the game plugin under `cfg(test)` or accept the warnings in the log.
 
 - `bevy-agent` needs the game running; "could not reach" means it is not, or the port differs.
   Only one game can bind a port; use `AgentHarnessPlugin::default().with_port(...)` and `--url`
-  to run several.
+  to run several (`run` and `stop` act on the game at `--url`).
+- Headless limits: bevy_ui `Interaction` never reacts to the cursor in a headless run (Bevy only
+  feeds it from window cameras), and `click` prints a note when the game uses it. Picking
+  (`Pointer<Click>` observers), `ButtonInput`, `Window::cursor_position()` and UI rendering all
+  work. Headless runs at a steady 60 updates per second and needs a GPU or software Vulkan.
+  To check `Interaction`-driven buttons, use a windowed `run`.
 - `screenshot -o` paths are resolved by the CLI to absolute paths, but the *game process* writes
   the file, so it must be able to reach that path.
 - `pause` freezes `Time<Virtual>`; systems still run every frame, so anything not driven by
@@ -210,7 +238,8 @@ in the game plugin under `cfg(test)` or accept the warnings in the log.
   own first read. A recording keeps the latest 1024 events and a game holds at most 64 recordings.
 - `schedule graph` lists systems with their sets and explicit `before`/`after` constraints, not
   the order they run in. Schedules marked as running in `schedule ls` (`Main`) cannot be inspected.
-- Kill the game process when you are done. Leaving it running holds the port and the GPU.
+- `bevy-agent stop` when you are done. A game left running holds the port and the GPU, and is
+  the build the next session will silently talk to.
 
 See `reference.md` next to this file for the raw `harness.*` JSON-RPC shapes when using `call`
 or writing your own client.

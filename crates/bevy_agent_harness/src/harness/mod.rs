@@ -1,5 +1,6 @@
 //! The game-side plugin. See [`AgentHarnessPlugin`].
 
+pub mod headless;
 pub mod input;
 pub mod logs;
 mod observe;
@@ -22,7 +23,8 @@ use serde_json::{Value, json};
 ///
 /// | method | params | result |
 /// |---|---|---|
-/// | `harness.status` | – | frame, time, pause state, entity count, windows, cameras |
+/// | `harness.status` | – | frame, time, pause state, entity count, windows, cameras, process, headless, log_capture |
+/// | `harness.exit` | – | null; the app exits after the current frame |
 /// | `harness.input` | `{ "actions": [Action, ...] }` | `{ "queued": n }` |
 /// | `harness.input.key` | `{ "key": "Space", "state": "tap"\|"press"\|"release", "hold_frames"?: 1 }` | `{ "queued": n }` |
 /// | `harness.input.mouse` | `{ "button": "Left", "state": "tap"\|"press"\|"release", "position"?: [x, y] }` | `{ "queued": n }` |
@@ -88,6 +90,7 @@ impl Plugin for AgentHarnessPlugin {
                 .with_method_main("harness.events", observe::events)
                 .with_method_main("harness.types", observe::types)
                 .with_method_main("harness.status", status)
+                .with_method_main("harness.exit", exit)
                 .with_method_main("harness.input", input::inject_batch)
                 .with_method_main("harness.input.key", input::inject_key)
                 .with_method_main("harness.input.mouse", input::inject_mouse)
@@ -121,11 +124,21 @@ impl Plugin for AgentHarnessPlugin {
 
         logs::ensure_buffer(app, self.log_capacity);
         app.add_plugins((input::plugin, step::plugin, screenshot::plugin));
+        app.insert_resource(ProcessInfo::capture());
+        let headless = headless::setup(app);
 
         info!(
-            "bevy_agent_harness: BRP listening on http://{}:{}",
-            self.address, self.port
+            "bevy_agent_harness: BRP listening on http://{}:{}{}",
+            self.address,
+            self.port,
+            if headless { " (headless)" } else { "" }
         );
+        if !logs::capture_installed() {
+            warn!(
+                "bevy_agent_harness: `bevy-agent logs` is unavailable because log capture is not \
+                 installed; set `LogPlugin {{ custom_layer: bevy_agent_harness::log_layer, .. }}`"
+            );
+        }
     }
 }
 
@@ -149,6 +162,48 @@ pub(crate) fn invalid_params(msg: impl Into<String>) -> BrpError {
         message: msg.into(),
         data: None,
     }
+}
+
+/// Identity of this game process, so a client can tell which build it is talking to.
+#[derive(Resource, Debug, Clone)]
+pub struct ProcessInfo {
+    /// Path of the running executable, captured at startup.
+    pub exe: Option<std::path::PathBuf>,
+    pub started: std::time::SystemTime,
+}
+
+impl ProcessInfo {
+    fn capture() -> Self {
+        Self {
+            exe: std::env::current_exe().ok(),
+            started: std::time::SystemTime::now(),
+        }
+    }
+
+    /// True when the executable on disk was written after this process started,
+    /// i.e. the game was rebuilt and this process still runs the old build.
+    pub fn stale(&self) -> bool {
+        self.exe
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|modified| modified > self.started)
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "pid": std::process::id(),
+            "exe": self.exe,
+            "uptime": self.started.elapsed().map(|d| d.as_secs_f64()).unwrap_or(0.0),
+            "stale": self.stale(),
+        })
+    }
+}
+
+/// `harness.exit` – ask the app to exit cleanly after the current frame.
+pub fn exit(In(_): In<Option<Value>>, world: &mut World) -> BrpResult {
+    world.write_message(AppExit::Success);
+    Ok(Value::Null)
 }
 
 /// `harness.status`
@@ -196,7 +251,11 @@ pub(crate) fn status_value(world: &mut World) -> Value {
             "name": name.map(|n| n.to_string()),
             "active": c.is_active,
             "order": c.order,
-            "target": target.map(|t| format!("{t:?}")),
+            "target": target.map(|t| match t {
+                // The handle's debug form is long and says nothing useful.
+                RenderTarget::Image(_) => "Image".to_string(),
+                other => format!("{other:?}"),
+            }),
             "size": c.physical_target_size().map(|s| [s.x, s.y]),
         }));
     }
@@ -213,5 +272,8 @@ pub(crate) fn status_value(world: &mut World) -> Value {
         "entities": world.entities().len(),
         "windows": windows,
         "cameras": cameras,
+        "process": world.get_resource::<ProcessInfo>().map(ProcessInfo::to_json),
+        "headless": world.contains_resource::<headless::Headless>(),
+        "log_capture": logs::capture_installed(),
     })
 }

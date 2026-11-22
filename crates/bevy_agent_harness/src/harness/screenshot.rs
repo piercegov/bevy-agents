@@ -112,6 +112,9 @@ pub fn request(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
         let entity =
             Entity::try_from_bits(bits).ok_or_else(|| invalid_params("bad window entity"))?;
         RenderTarget::Window(WindowRef::Entity(entity))
+    } else if let Some(offscreen) = world.get_resource::<super::headless::OffscreenTarget>() {
+        // Headless: the window has no surface; every window camera renders here.
+        RenderTarget::Image(offscreen.0.clone().into())
     } else {
         let has_primary = world
             .query_filtered::<Entity, With<PrimaryWindow>>()
