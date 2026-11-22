@@ -6,7 +6,7 @@ A Cargo workspace for tooling that makes Bevy games easier to develop with (and 
 |---|---|
 | [`crates/bevy_agent_harness`](crates/bevy_agent_harness) | Plugin + CLI + test harness that lets an agent inspect, drive and verify a running Bevy game over the Bevy Remote Protocol. |
 
-Requires Bevy 0.19.
+Requires Bevy 0.20.
 
 ## bevy_agent_harness
 
@@ -99,8 +99,8 @@ for a verified change. `logs` fails with instructions (instead of printing nothi
 game did not install `log_layer`.
 
 Headless runs need `agent_plugins(...)` around the game's plugin group. Cameras render to an
-offscreen image that `screenshot` captures; UI is drawn and picking (`Pointer<Click>`) works,
-but bevy_ui's `Interaction` does not react to the cursor without a real window.
+offscreen image that `screenshot` captures; UI is drawn and picking (`PointerClick`, `Hovered`, `Pressed`)
+works, but the deprecated bevy_ui `Interaction` does not react to the cursor without a real window.
 
 Exit codes are usable as checks: `get @Player Stunned` prints what it could read and exits 1
 (with the reason on stderr) when a component you named is missing or unreadable, so
@@ -180,7 +180,7 @@ Do this before populating assets; do not reinitialize an already configured asse
 `entity_exists(entity)` checks ECS existence, including entities with a game's `Dead`
 marker. `is_alive` remains a compatibility alias with the same meaning.
 
-The harness replaces Bevy 0.19.1's `world.observe+watch` handler to return serialization
+The harness replaces Bevy's `world.observe+watch` handler (unfixed as of 0.20.1) to return serialization
 errors as data instead of panicking. It retains at most 1024 events per event/entity
 key and 64 keys per world; overflow is reported as a `$dropped` error record. Successful
 payloads retain Bevy's format. Keys persist for the world's lifetime, and readers of

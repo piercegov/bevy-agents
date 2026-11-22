@@ -246,8 +246,8 @@ fn jump_leaves_the_ground() {
   populating assets. Add other asset types only as required; a renderer is unnecessary.
 - Visuals: `TestApp::with_rendering(640, 360)` then `screenshot()` or `assert_golden("name")`;
   `start_recording("clip.mp4")` ... `stop_recording()` saves a video of the frames in between.
-  UI is drawn and `click` reaches picking observers there; `Interaction` does not react (same
-  limit as headless runs). Golden PNGs live in `tests/golden/`; the first run creates them, `UPDATE_GOLDEN=1` rewrites
+  UI is drawn and `click` reaches picking observers there, and `Hovered`/`Pressed` update; the
+  deprecated `Interaction` does not react (same limit as headless runs). Golden PNGs live in `tests/golden/`; the first run creates them, `UPDATE_GOLDEN=1` rewrites
   them, and a failure writes `tests/golden/__failures__/<name>.actual.png` and `.diff.png` for
   you to look at. Rendering tests need a GPU (or lavapipe/SwiftShader).
 - Components used in `TestApp` do **not** need `Reflect`; only the BRP path does.
@@ -260,11 +260,12 @@ in the game plugin under `cfg(test)` or accept the warnings in the log.
 - `bevy-agent` needs the game running; "could not reach" means it is not, or the port differs.
   Only one game can bind a port; use `AgentHarnessPlugin::default().with_port(...)` and `--url`
   to run several (`run` and `stop` act on the game at `--url`).
-- Headless limits: bevy_ui `Interaction` never reacts to the cursor in a headless run (Bevy only
-  feeds it from window cameras), and `click` prints a note when the game uses it. Picking
-  (`Pointer<Click>` observers), `ButtonInput`, `Window::cursor_position()` and UI rendering all
-  work. Headless runs at a steady 60 updates per second and needs a GPU or software Vulkan.
-  To check `Interaction`-driven buttons, use a windowed `run`.
+- Headless limits: the deprecated bevy_ui `Interaction` never reacts to the cursor in a headless
+  run (Bevy only feeds it from window cameras), and `click` prints a note when the game uses it.
+  Picking (`PointerClick` observers), `Hovered`/`Pressed` (its 0.20 replacements),
+  `ButtonInput`, `Window::cursor_position()` and UI rendering all work. Headless runs at a steady
+  60 updates per second and needs a GPU or software Vulkan. To check `Interaction`-driven
+  buttons, use a windowed `run`.
 - `screenshot -o` and `record start -o` paths are resolved by the CLI to absolute paths, but the
   *game process* writes the file, so it must be able to reach that path.
 - `pause` freezes `Time<Virtual>`; systems still run every frame, so anything not driven by

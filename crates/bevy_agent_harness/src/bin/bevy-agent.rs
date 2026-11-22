@@ -2083,7 +2083,7 @@ fn finish_input(
     Ok(())
 }
 
-/// bevy_ui's `Interaction` only follows cameras that target a window, so in a
+/// bevy_ui's deprecated `Interaction` only follows cameras that target a window, so in a
 /// headless run it never reacts to the cursor. Say so when the game uses it,
 /// instead of letting a dead button look like a bug in the game.
 fn warn_headless_interaction(client: &BrpClient) {
@@ -2094,15 +2094,15 @@ fn warn_headless_interaction(client: &BrpClient) {
     let uses_interaction = client
         .query(
             json!({}),
-            json!({ "with": ["bevy_ui::focus::Interaction"] }),
+            json!({ "with": ["bevy_ui::focus::DeprecatedInteraction"] }),
             false,
         )
         .is_ok_and(|rows| !rows.is_empty());
     if uses_interaction {
         eprintln!(
             "note: headless run: bevy_ui `Interaction` components do not react to the cursor \
-             here (picking events such as `Pointer<Click>` do). Use a windowed `bevy-agent run` \
-             to check `Interaction`-driven buttons."
+             here (picking events such as `PointerClick`, and `Hovered`/`Pressed`, do). Use a \
+             windowed `bevy-agent run` to check `Interaction`-driven buttons."
         );
     }
 }

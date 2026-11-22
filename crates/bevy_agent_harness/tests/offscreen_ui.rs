@@ -2,7 +2,10 @@
 //! UI must still be drawn and injected clicks must reach it through picking.
 //! Needs a GPU.
 
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::ui::Pressed;
+use bevy::ui_widgets::Button;
 use bevy_agent_harness::testing::TestApp;
 
 #[derive(Resource, Default)]
@@ -15,6 +18,7 @@ fn ui(app: &mut App) {
         commands
             .spawn((
                 Button,
+                Hovered::default(),
                 BackgroundColor(Color::srgb(1.0, 0.0, 0.0)),
                 Node {
                     position_type: PositionType::Absolute,
@@ -25,7 +29,7 @@ fn ui(app: &mut App) {
                     ..default()
                 },
             ))
-            .observe(|_: On<Pointer<Click>>, mut clicks: ResMut<Clicks>| clicks.0 += 1);
+            .observe(|_: On<PointerClick>, mut clicks: ResMut<Clicks>| clicks.0 += 1);
     });
 }
 
@@ -49,11 +53,42 @@ fn ui_is_drawn_and_clickable_when_rendering_offscreen() {
     // Processed by the time `click` returns, like every other input helper.
     app.click(Vec2::new(150.0, 125.0));
     assert_eq!(app.resource::<Clicks>().0, 1);
+}
 
-    // Known limit: bevy_ui's `Interaction` only follows cameras that target a
-    // window, so it does not react here. If this starts failing, Bevy changed
-    // and the caveat in the skill can go.
+/// Bevy 0.20's replacements for `Interaction` (`Hovered`, `Pressed`) are
+/// picking-driven, so unlike `Interaction` they work offscreen.
+#[test]
+fn hovered_and_pressed_track_the_cursor_offscreen() {
+    let mut app = TestApp::with_rendering(400, 300);
+    app.add_plugins(ui);
+    app.advance(5);
     let button = app.single::<Button>();
+
+    app.move_cursor(Vec2::new(350.0, 250.0)).advance(2);
+    assert!(!app.component::<Hovered>(button).get());
+
+    app.move_cursor(Vec2::new(150.0, 125.0)).advance(2);
+    assert!(app.component::<Hovered>(button).get());
+
+    app.mouse_press(MouseButton::Left).advance(2);
+    assert!(app.world().get::<Pressed>(button).is_some());
+    app.mouse_release(MouseButton::Left).advance(2);
+    assert!(app.world().get::<Pressed>(button).is_none());
+}
+
+/// Known limit: the deprecated `Interaction` only follows cameras that target a
+/// window, so it does not react here. If this starts failing, Bevy changed and
+/// the caveat in the skill can go.
+#[test]
+#[allow(deprecated)]
+fn deprecated_interaction_ignores_offscreen_cursor() {
+    use bevy::ui::Interaction;
+
+    let mut app = TestApp::with_rendering(400, 300);
+    app.add_plugins(ui);
+    app.advance(5);
+    let button = app.single::<Button>();
+    app.world_mut().entity_mut(button).insert(Interaction::None);
     app.move_cursor(Vec2::new(150.0, 125.0)).advance(2);
     assert_eq!(*app.component::<Interaction>(button), Interaction::None);
 }

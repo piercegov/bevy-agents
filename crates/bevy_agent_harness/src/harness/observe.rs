@@ -1,4 +1,4 @@
-//! Compatibility replacement for Bevy 0.19.1's observer watcher, whose
+//! Compatibility replacement for Bevy's observer watcher (still in 0.20.1), whose
 //! serialization-error placeholder panics when drained. Keep the wire format
 //! for successful events, bound retained data, and report failures as data.
 use std::collections::{HashMap, VecDeque};
