@@ -116,6 +116,191 @@ impl InputQueue {
     }
 }
 
+/// How the speed of a [`Drag`] changes along its path.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Ease {
+    /// Constant speed.
+    Linear,
+    /// Speeds up at the start and slows down at the end, like a hand does.
+    #[default]
+    Smooth,
+}
+
+/// A cursor movement spread over several frames: a drag when a button is held,
+/// a glide when not. With more than two points the path is a smooth curve
+/// through all of them.
+///
+/// Every frame gets a `CursorMoved` and a matching `MouseMotion`, as a real
+/// mouse produces, so both cursor-based and motion-based controls react.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Drag {
+    /// Start, any waypoints, and end, in logical window pixels.
+    pub points: Vec<Vec2>,
+    /// Frames the movement takes.
+    pub frames: u32,
+    /// Button held during the movement, if any.
+    pub button: Option<MouseButton>,
+    pub ease: Ease,
+}
+
+impl Drag {
+    /// A left-button drag from `from` to `to` over 30 frames.
+    pub fn new(from: Vec2, to: Vec2) -> Self {
+        Self {
+            points: vec![from, to],
+            frames: 30,
+            button: Some(MouseButton::Left),
+            ease: Ease::Smooth,
+        }
+    }
+
+    /// Pass through `point` on the way (after any earlier waypoints).
+    pub fn via(mut self, point: Vec2) -> Self {
+        let end = self.points.len() - 1;
+        self.points.insert(end, point);
+        self
+    }
+
+    pub fn frames(mut self, frames: u32) -> Self {
+        self.frames = frames;
+        self
+    }
+
+    /// Which button to hold; `None` only moves the cursor.
+    pub fn button(mut self, button: Option<MouseButton>) -> Self {
+        self.button = button;
+        self
+    }
+
+    pub fn ease(mut self, ease: Ease) -> Self {
+        self.ease = ease;
+        self
+    }
+
+    /// Frames from the first action to the last: one to arrive (and press),
+    /// `frames` of movement, and one to release when a button is held.
+    pub fn total_frames(&self) -> u32 {
+        self.frames.max(1) + if self.button.is_some() { 2 } else { 1 }
+    }
+
+    /// The path as a dense polyline: straight for two points, otherwise a
+    /// Catmull-Rom spline through every point.
+    fn polyline(&self) -> Vec<Vec2> {
+        let p = &self.points;
+        if p.len() <= 2 {
+            return p.clone();
+        }
+        const SAMPLES: usize = 24;
+        let at = |i: isize| p[i.clamp(0, p.len() as isize - 1) as usize];
+        let mut line = vec![p[0]];
+        for seg in 0..p.len() as isize - 1 {
+            let (p0, p1, p2, p3) = (at(seg - 1), at(seg), at(seg + 1), at(seg + 2));
+            for k in 1..=SAMPLES {
+                let t = k as f32 / SAMPLES as f32;
+                let (t2, t3) = (t * t, t * t * t);
+                line.push(
+                    0.5 * ((2.0 * p1)
+                        + (p2 - p0) * t
+                        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+                        + (3.0 * p1 - p0 - 3.0 * p2 + p3) * t3),
+                );
+            }
+        }
+        line
+    }
+
+    /// Cursor position after each of the `frames` movement frames; the last
+    /// one is exactly the end point.
+    pub fn positions(&self) -> Vec<Vec2> {
+        let line = self.polyline();
+        let frames = self.frames.max(1);
+        let Some(&end) = line.last() else {
+            return Vec::new();
+        };
+        let mut lengths = vec![0.0f32];
+        for pair in line.windows(2) {
+            lengths.push(lengths.last().unwrap() + pair[0].distance(pair[1]));
+        }
+        let total = *lengths.last().unwrap();
+        (1..=frames)
+            .map(|i| {
+                if i == frames || total <= f32::EPSILON {
+                    return end;
+                }
+                let t = i as f32 / frames as f32;
+                let t = match self.ease {
+                    Ease::Linear => t,
+                    Ease::Smooth => t * t * (3.0 - 2.0 * t),
+                };
+                // Walk the polyline by distance so speed does not depend on
+                // how far apart the waypoints are.
+                let target = t * total;
+                let seg = lengths
+                    .partition_point(|&l| l < target)
+                    .clamp(1, line.len() - 1);
+                let span = lengths[seg] - lengths[seg - 1];
+                let local = if span > 0.0 {
+                    (target - lengths[seg - 1]) / span
+                } else {
+                    0.0
+                };
+                line[seg - 1].lerp(line[seg], local)
+            })
+            .collect()
+    }
+
+    /// The queue entries for this movement, as `(delay, action)`.
+    pub fn actions(&self) -> Vec<(u32, InputAction)> {
+        let Some(&start) = self.points.first() else {
+            return Vec::new();
+        };
+        let mut actions = vec![(
+            0,
+            InputAction::Cursor {
+                position: start.into(),
+            },
+        )];
+        if let Some(button) = self.button {
+            actions.push((
+                0,
+                InputAction::MouseButton {
+                    button,
+                    state: ButtonState::Pressed,
+                },
+            ));
+        }
+        let mut previous = start;
+        let mut delay = 0;
+        for position in self.positions() {
+            delay += 1;
+            actions.push((
+                delay,
+                InputAction::Cursor {
+                    position: position.into(),
+                },
+            ));
+            actions.push((
+                delay,
+                InputAction::Motion {
+                    delta: (position - previous).into(),
+                },
+            ));
+            previous = position;
+        }
+        if let Some(button) = self.button {
+            actions.push((
+                delay + 1,
+                InputAction::MouseButton {
+                    button,
+                    state: ButtonState::Released,
+                },
+            ));
+        }
+        actions
+    }
+}
+
 pub(crate) fn plugin(app: &mut App) {
     // In `First`, ahead of picking's input pass (which runs there) and of
     // `InputSystems` in `PreUpdate`, so both see an action in the frame it is delivered.
@@ -521,6 +706,76 @@ pub fn inject_cursor(In(params): In<Option<Value>>, mut queue: ResMut<InputQueue
         queue.push(p.delay, InputAction::Motion { delta });
     }
     Ok(queued(&queue))
+}
+
+#[derive(Deserialize, Default)]
+struct DragParams {
+    /// Start; the current cursor position when omitted.
+    #[serde(default)]
+    from: Option<[f32; 2]>,
+    to: Option<[f32; 2]>,
+    /// Waypoints the path curves through.
+    #[serde(default)]
+    via: Vec<[f32; 2]>,
+    #[serde(default)]
+    frames: Option<u32>,
+    /// Button to hold; omit to only move the cursor.
+    #[serde(default)]
+    button: Option<MouseButton>,
+    #[serde(default)]
+    ease: Ease,
+}
+
+/// `harness.input.drag` – move the cursor along a path over several frames,
+/// optionally holding a button. When the game is paused it is stepped for
+/// exactly those frames, so the movement plays out in game time (and shows
+/// up in a recording) instead of over frames in which the clock stands still.
+pub fn inject_drag(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let p: DragParams = parse_params(params)?;
+    let to =
+        p.to.ok_or_else(|| super::invalid_params("`to` is required"))?;
+    let from = match p.from {
+        Some(from) => Vec2::from(from),
+        None => {
+            let mut windows = world.query::<(&Window, Option<&PrimaryWindow>)>();
+            let mut cursor = None;
+            for (window, primary) in windows.iter(world) {
+                if primary.is_some() || cursor.is_none() {
+                    cursor = window.cursor_position().or(cursor);
+                }
+            }
+            cursor.ok_or_else(|| {
+                super::invalid_params("the cursor has no position yet; give `from`")
+            })?
+        }
+    };
+    let frames = p.frames.unwrap_or(30);
+    if !(1..=3600).contains(&frames) {
+        return Err(super::invalid_params("`frames` must be between 1 and 3600"));
+    }
+    let mut drag = Drag::new(from, to.into())
+        .frames(frames)
+        .button(p.button)
+        .ease(p.ease);
+    for point in p.via {
+        drag = drag.via(point.into());
+    }
+
+    let mut queue = world.resource_mut::<InputQueue>();
+    for (delay, action) in drag.actions() {
+        queue.push(delay, action);
+    }
+    let mut result = queued(&queue);
+    let total = drag.total_frames();
+    let paused = world
+        .get_resource::<Time<Virtual>>()
+        .is_some_and(|t| t.is_paused());
+    if paused && let Some(mut stepper) = world.get_resource_mut::<super::step::Stepper>() {
+        stepper.paused = true;
+        stepper.step(total, None);
+        result["stepped_frames"] = json!(total);
+    }
+    Ok(result)
 }
 
 #[derive(Deserialize, Default)]

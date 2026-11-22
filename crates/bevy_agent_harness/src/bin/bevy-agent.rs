@@ -475,8 +475,41 @@ enum ScheduleCmd {
 
 #[derive(Subcommand)]
 enum MouseCmd {
-    /// Move the cursor to a position.
-    Move { x: f32, y: f32 },
+    /// Move the cursor to a position: at once, or gliding there with --frames.
+    Move {
+        x: f32,
+        y: f32,
+        /// Glide from the current position over this many frames instead of jumping.
+        #[arg(long)]
+        frames: Option<u32>,
+        /// With --frames: curve through this point on the way, as X,Y (repeatable).
+        #[arg(long, value_name = "X,Y", requires = "frames")]
+        via: Vec<String>,
+        /// With --frames: move at constant speed instead of easing in and out.
+        #[arg(long, requires = "frames")]
+        linear: bool,
+    },
+    /// Press a button at X1 Y1, move smoothly to X2 Y2 and release, e.g. to pan a
+    /// camera or drag an object. Each frame sends a cursor move and matching
+    /// relative motion. While the game is paused it is stepped for exactly the
+    /// frames the drag takes, so a recording shows it.
+    Drag {
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        /// Frames the movement takes (60 is one second).
+        #[arg(long, default_value_t = 30)]
+        frames: u32,
+        #[arg(long, short, default_value = "left")]
+        button: MouseButtonArg,
+        /// Curve through this point on the way, as X,Y (repeatable).
+        #[arg(long, value_name = "X,Y")]
+        via: Vec<String>,
+        /// Move at constant speed instead of easing in and out.
+        #[arg(long)]
+        linear: bool,
+    },
     /// Relative motion (for look controls).
     Motion { dx: f32, dy: f32 },
     /// Press a button.
@@ -1454,7 +1487,38 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Mouse(cmd) => {
             let r = match cmd {
-                MouseCmd::Move { x, y } => client.cursor(json!({ "position": [x, y] }))?,
+                MouseCmd::Move {
+                    x, y, frames: None, ..
+                } => client.cursor(json!({ "position": [x, y] }))?,
+                MouseCmd::Move {
+                    x,
+                    y,
+                    frames: Some(frames),
+                    via,
+                    linear,
+                } => client.drag(json!({
+                    "to": [x, y],
+                    "via": parse_points(&via)?,
+                    "frames": frames,
+                    "ease": if linear { "linear" } else { "smooth" },
+                }))?,
+                MouseCmd::Drag {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    frames,
+                    button,
+                    via,
+                    linear,
+                } => client.drag(json!({
+                    "from": [x1, y1],
+                    "to": [x2, y2],
+                    "via": parse_points(&via)?,
+                    "frames": frames,
+                    "button": button.as_value(),
+                    "ease": if linear { "linear" } else { "smooth" },
+                }))?,
                 MouseCmd::Motion { dx, dy } => client.cursor(json!({ "delta": [dx, dy] }))?,
                 MouseCmd::Down { button } => {
                     client.mouse(json!({ "button": button.as_value(), "state": "press" }))?
@@ -1972,6 +2036,19 @@ fn ok(out: &Out) {
 
 /// Report a queued input and, unless `no_wait`, block until the game has run
 /// enough frames to consume it (so a following `get` observes the effect).
+/// Parse `X,Y` arguments.
+fn parse_points(points: &[String]) -> Result<Vec<[f32; 2]>> {
+    points
+        .iter()
+        .map(|p| {
+            let (x, y) = p
+                .split_once(',')
+                .ok_or_else(|| anyhow!("expected X,Y but got `{p}`"))?;
+            Ok([x.trim().parse()?, y.trim().parse()?])
+        })
+        .collect()
+}
+
 fn finish_input(
     client: &BrpClient,
     out: &Out,

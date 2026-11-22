@@ -31,6 +31,7 @@ use serde_json::{Value, json};
 /// | `harness.input.mouse` | `{ "button": "Left", "state": "tap"\|"press"\|"release", "position"?: [x, y] }` | `{ "queued": n }` |
 /// | `harness.input.cursor` | `{ "position": [x, y] }` | `{ "queued": n }` |
 /// | `harness.input.scroll` | `{ "x"?: 0, "y": 1, "unit"?: "line"\|"pixel" }` | `{ "queued": n }` |
+/// | `harness.input.drag` | `{ "from"?: [x, y], "to": [x, y], "via"?: [[x, y], ...], "frames"?: 30, "button"?: "Left", "ease"?: "smooth"\|"linear" }` | `{ "queued": n, "stepped_frames"?: n }` |
 /// | `harness.events` | `{ "event": "path::Event", "entity"?: entity }` | `{ "recording_started", "events": [...], "dropped" }` |
 /// | `harness.types` | `{ "kind": "event"\|"message" }` | `["path::Type", ...]` |
 /// | `harness.logs` | `{ "since"?: seq, "level"?: "warn", "limit"?: 200, "contains"?: "..", "target"?: ".." }` | `{ "entries": [...], "next": seq, ... }` |
@@ -100,6 +101,7 @@ impl Plugin for AgentHarnessPlugin {
                 .with_method_main("harness.input.mouse", input::inject_mouse)
                 .with_method_main("harness.input.cursor", input::inject_cursor)
                 .with_method_main("harness.input.scroll", input::inject_scroll)
+                .with_method_main("harness.input.drag", input::inject_drag)
                 .with_method_main("harness.logs", logs::get_logs)
                 .with_method_main("harness.logs.clear", logs::clear_logs)
                 .with_method_main("harness.pause", step::pause)

@@ -69,6 +69,8 @@ bevy-agent key space                    tap a key (waits until the game processe
 bevy-agent key w --down / --up          hold / release
 bevy-agent click 300 200                move cursor and click (logical pixels, top-left origin)
 bevy-agent mouse move|motion|down|up|scroll
+bevy-agent mouse drag 900 250 400 450 --button right --frames 60    smooth drag (camera pan, ...)
+bevy-agent mouse move 400 300 --frames 30    glide the cursor instead of jumping
 bevy-agent screenshot -o shot.png       captured by the game's renderer, saved as PNG
 bevy-agent record start -o demo.mp4     record a video (needs ffmpeg); `record stop` finishes the file
 bevy-agent record stop --share          ...and print a link that plays it in a browser
@@ -150,6 +152,8 @@ fn title_screen_looks_right() {
 - `get::<C>(e)`, `component::<C>(e)`, `assert_component::<C>(e, pred)`, `single::<C>()`,
   `entities_with::<C>()`, `find_by_name("Player")`, `resource::<R>()`, `component_names(e)`
 - `logs()`, `log_problems()`, `assert_no_log_errors()`
+- `drag(from, to, frames)` and `drag_with(Drag::new(from, to).via(p).button(..).ease(..))`: a smooth
+  cursor path, one step per frame, with the button held.
 - `screenshot()`, `save_screenshot(path)`, `assert_golden(name)`, `assert_golden_with(name, GoldenOptions)`.
   Missing golden files are created on first run; `UPDATE_GOLDEN=1` rewrites them; failures write
   `tests/golden/__failures__/<name>.actual.png` and `.diff.png`.

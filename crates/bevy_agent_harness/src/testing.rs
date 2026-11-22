@@ -411,6 +411,21 @@ impl TestApp {
         self.advance(1)
     }
 
+    /// Drag with the left button from `from` to `to` over `frames` frames,
+    /// easing in and out. Advances until the button is released.
+    pub fn drag(&mut self, from: Vec2, to: Vec2, frames: u32) -> &mut Self {
+        self.drag_with(crate::harness::input::Drag::new(from, to).frames(frames))
+    }
+
+    /// Run any [`Drag`](crate::harness::input::Drag): another button or none
+    /// (a glide), waypoints for a curved path, linear speed.
+    pub fn drag_with(&mut self, drag: crate::harness::input::Drag) -> &mut Self {
+        for (delay, action) in drag.actions() {
+            self.queue().push(delay, action);
+        }
+        self.advance(drag.total_frames())
+    }
+
     /// Move the cursor and click. Advances three frames.
     pub fn click(&mut self, position: Vec2) -> &mut Self {
         self.click_with(position, MouseButton::Left)

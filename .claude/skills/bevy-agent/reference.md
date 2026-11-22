@@ -16,6 +16,7 @@ the raw protocol does not.
 | `harness.input.mouse` | `{ button?: "Left", state?: "tap"\|"press"\|"release", position?: [x, y], hold_frames?, delay? }` | `{ queued, horizon_frames }` |
 | `harness.input.cursor` | `{ position?: [x, y], delta?: [dx, dy], delay? }` | `{ queued, horizon_frames }` |
 | `harness.input.scroll` | `{ x?: 0, y: 1, unit?: "line"\|"pixel", delay? }` | `{ queued, horizon_frames }` |
+| `harness.input.drag` | `{ from?: [x, y], to: [x, y], via?: [[x, y], ...], frames?: 30, button?: "Left", ease?: "smooth"\|"linear" }`; `from` defaults to the cursor, no `button` only moves it | `{ queued, horizon_frames, stepped_frames? }` (steps the game itself when paused) |
 | `harness.input` | `{ actions: [Action \| { delay, action: Action }] }` where `Action` is `{kind: "key", key, state: "Pressed"\|"Released"}`, `{kind: "mouse_button", button, state}`, `{kind: "cursor", position}`, `{kind: "motion", delta}`, `{kind: "scroll", x, y, unit}` | `{ queued, horizon_frames }` |
 | `harness.types` | `{ kind: "event"\|"message" }` | `[type_path, ...]` usable with `world.trigger_event` / `world.write_message` |
 | `harness.events` | `{ event: type_path, entity?: entity }` | `{ recording_started, events: [value, ...], dropped }`; the first call per `(event, entity)` starts recording, later calls return and remove what was recorded since |

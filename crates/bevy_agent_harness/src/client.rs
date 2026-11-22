@@ -550,6 +550,11 @@ impl BrpClient {
     pub fn cursor(&self, params: Value) -> Result<Value> {
         self.call("harness.input.cursor", Some(params))
     }
+    /// Move the cursor along a path over several frames, optionally holding a
+    /// button: `to`, and optionally `from`, `via`, `frames`, `button`, `ease`.
+    pub fn drag(&self, params: Value) -> Result<Value> {
+        self.call("harness.input.drag", Some(params))
+    }
     pub fn scroll(&self, params: Value) -> Result<Value> {
         self.call("harness.input.scroll", Some(params))
     }

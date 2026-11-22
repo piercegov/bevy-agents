@@ -150,6 +150,13 @@ a recording stops by itself after `--max-seconds` (default 120) of game time. Us
 `--fps 30` or a `.gif` name for something small enough to embed. `status` shows a running
 recording; stopping the game finishes the file first.
 
+For mouse-driven features (camera pan, dragging objects, hover effects) use
+`bevy-agent mouse drag X1 Y1 X2 Y2 --button right --frames 60` or
+`mouse move X Y --frames 30`: the cursor travels smoothly, one step per frame, easing in and
+out, with both cursor and relative-motion input like a real mouse. While the game is paused
+these step it for exactly the frames they take, so they need no separate `step` and show up
+in the recording. A plain `mouse move` or `click` jumps instantly, which looks wrong on video.
+
 `--share` starts a small background web server for that one file and prints a link to a page
 that plays it; pass the link on to the user. `bevy-agent share FILE` does the same for a video
 or screenshot you already have. By default the link is a localhost address on the machine
@@ -179,6 +186,7 @@ after 60 minutes without a request (`--idle-minutes`).
 | Type layout | `bevy-agent schema Health` |
 | Keyboard | `bevy-agent key space`, `key w a s d`, `key --down w`, `key --up w`, `key --hold 10 space` |
 | Mouse | `bevy-agent click 300 200`, `mouse move x y`, `mouse motion dx dy`, `mouse down|up`, `mouse scroll 1` |
+| Drag / pan / smooth cursor | `bevy-agent mouse drag 900 250 400 450 --button right --frames 60`, `--via 300,150` to curve, `mouse move 400 300 --frames 30` to glide without a button |
 | Screenshot | `bevy-agent screenshot -o /tmp/shot.png` (then look at it) |
 | Demo video | `bevy-agent pause`, `record start -o /tmp/demo.mp4`, inputs + `step N`, `record stop --share` |
 | Link to a video or screenshot | `bevy-agent share /tmp/demo.mp4`, `share shot.png --bind tailscale` |

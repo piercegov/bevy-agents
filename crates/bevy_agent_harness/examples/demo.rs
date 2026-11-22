@@ -6,6 +6,7 @@
 //! bevy-agent ls --short
 //! bevy-agent key Space          # player takes damage
 //! bevy-agent click 200 100      # spawns a coin at the cursor
+//! bevy-agent mouse drag 800 300 500 450 --button right --frames 60   # pans the camera
 //! bevy-agent event trigger Heal '{"amount": 5}'
 //! bevy-agent message write SpawnCoin '{"x": 0, "y": 50}'
 //! bevy-agent event read PlayerDamaged   # start recording, then `key space`, then read again
@@ -14,6 +15,7 @@
 //! bevy-agent stop
 //! ```
 
+use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use bevy_agent_harness::AgentHarnessPlugin;
@@ -86,6 +88,7 @@ fn main() {
             Update,
             (
                 movement,
+                pan_camera,
                 take_damage,
                 spawn_coin_on_click,
                 spawn_requested_coins,
@@ -122,6 +125,22 @@ fn setup(mut commands: Commands) {
         ));
     }
     info!("demo ready: arrows/WASD move, Space damages, click spawns a coin");
+}
+
+/// Drag with the right button to pan the camera.
+fn pan_camera(
+    buttons: Res<ButtonInput<MouseButton>>,
+    motion: Res<AccumulatedMouseMotion>,
+    mut camera: Query<&mut Transform, With<Camera2d>>,
+) {
+    if !buttons.pressed(MouseButton::Right) {
+        return;
+    }
+    for mut transform in &mut camera {
+        // The world follows the cursor: the camera moves the other way (y is up).
+        transform.translation.x -= motion.delta.x;
+        transform.translation.y += motion.delta.y;
+    }
 }
 
 fn movement(
