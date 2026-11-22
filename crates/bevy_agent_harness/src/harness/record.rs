@@ -18,12 +18,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bevy::camera::RenderTarget;
+use bevy::input::ButtonState;
+use bevy::input::mouse::MouseButtonInput;
 use bevy::prelude::*;
 use bevy::remote::{BrpError, BrpResult};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
+use bevy::window::PrimaryWindow;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::overlay::{Overlay, RIPPLE_SECS, Ripple};
 use super::screenshot::{resolve_target, to_rgba};
 use super::{invalid_params, parse_params};
 
@@ -48,6 +52,7 @@ enum Msg {
         seq: u64,
         repeat: u32,
         image: Box<Image>,
+        overlay: Option<Overlay>,
     },
     /// No more frames will be requested; `total` captures were.
     Finish { total: u64 },
@@ -62,6 +67,10 @@ pub struct RecordOptions {
     pub fps: f64,
     /// The recording stops by itself after this much game time.
     pub max_seconds: f64,
+    /// Draw the mouse onto the video: a cursor arrow, a highlight while a
+    /// button is held and a ripple where one is pressed. Only the video gets
+    /// it; the game and its screenshots are untouched.
+    pub cursor: bool,
 }
 
 impl RecordOptions {
@@ -70,7 +79,13 @@ impl RecordOptions {
             path: path.into(),
             fps: DEFAULT_FPS,
             max_seconds: DEFAULT_MAX_SECONDS,
+            cursor: false,
         }
+    }
+
+    pub fn cursor(mut self, cursor: bool) -> Self {
+        self.cursor = cursor;
+        self
     }
 }
 
@@ -86,6 +101,10 @@ struct Active {
     seq: u64,
     max_frames: u64,
     tx: SyncSender<Msg>,
+    cursor: bool,
+    /// Button presses still rippling: where (as a fraction of the window) and
+    /// the video frame they started on.
+    ripples: Vec<([f32; 2], u64)>,
 }
 
 /// The current recording, if any, and the outcome of the last one.
@@ -258,6 +277,8 @@ pub fn start(world: &mut World, target: RenderTarget, opts: RecordOptions) -> Re
         seq: 0,
         max_frames: (opts.max_seconds * opts.fps).ceil().max(1.0) as u64,
         tx,
+        cursor: opts.cursor,
+        ripples: Vec::new(),
     });
     Ok(())
 }
@@ -281,20 +302,69 @@ fn capture_frames(
     mut commands: Commands,
     mut recorder: ResMut<Recorder>,
     time: Res<Time<Virtual>>,
+    windows: Query<(&Window, Option<&PrimaryWindow>)>,
+    buttons: Option<Res<ButtonInput<MouseButton>>>,
+    presses: Option<MessageReader<MouseButtonInput>>,
 ) {
+    // Read every frame, so presses from before a recording never show up in it.
+    let pressed = presses.is_some_and(|mut presses| {
+        presses
+            .read()
+            .filter(|press| press.state == ButtonState::Pressed)
+            .count()
+            > 0
+    });
     let Some(active) = recorder.bypass_change_detection().active.as_mut() else {
         return;
     };
+    // The cursor as a fraction of the window, which is what the video shows.
+    let cursor = if active.cursor {
+        let mut found = None;
+        for (window, primary) in &windows {
+            if primary.is_some() || found.is_none() {
+                found = Some(window);
+            }
+        }
+        found.and_then(|window| {
+            let position = window.cursor_position()?;
+            Some([position.x / window.width(), position.y / window.height()])
+        })
+    } else {
+        None
+    };
+    if pressed && let Some(cursor) = cursor {
+        active.ripples.push((cursor, active.emitted));
+    }
+
     let start = *active.start.get_or_insert(time.elapsed());
     let recorded = time.elapsed().saturating_sub(start).as_secs_f64();
     // Frame 0 is the picture at the start; frame n shows game time n / fps.
     let due = ((recorded + FRAME_EPSILON_SECS) * active.fps).floor() as u64 + 1;
     let due = due.min(active.max_frames);
     if due > active.emitted {
+        let first = active.emitted;
         let repeat = (due - active.emitted) as u32;
         active.emitted = due;
         let seq = active.seq;
         active.seq += 1;
+        let fps = active.fps as f32;
+        let overlay = active.cursor.then(|| Overlay {
+            cursor,
+            held: buttons
+                .as_ref()
+                .is_some_and(|buttons| buttons.get_pressed().next().is_some()),
+            ripples: active
+                .ripples
+                .iter()
+                .map(|&(at, started)| Ripple {
+                    at,
+                    age: (first - started) as f32 / fps,
+                })
+                .collect(),
+        });
+        active
+            .ripples
+            .retain(|&(_, started)| ((due - started) as f32 / fps) < RIPPLE_SECS);
         let tx = active.tx.clone();
         commands.spawn(Screenshot(active.target.clone())).observe(
             move |captured: On<ScreenshotCaptured>| {
@@ -303,6 +373,7 @@ fn capture_frames(
                     seq,
                     repeat,
                     image: Box::new(captured.event().image.clone()),
+                    overlay: overlay.clone(),
                 });
             },
         );
@@ -337,7 +408,7 @@ struct Writer {
 impl Writer {
     fn run(mut self, rx: Receiver<Msg>, result: SharedResult) {
         // Captures can complete out of order; write them by sequence number.
-        let mut pending: BTreeMap<u64, (u32, Box<Image>)> = BTreeMap::new();
+        let mut pending: BTreeMap<u64, (u32, Box<Image>, Option<Overlay>)> = BTreeMap::new();
         let mut next = 0u64;
         let mut total: Option<u64> = None;
         loop {
@@ -349,8 +420,13 @@ impl Writer {
                 Some(_) => rx.recv_timeout(DRAIN_TIMEOUT),
             };
             match msg {
-                Ok(Msg::Frame { seq, repeat, image }) => {
-                    pending.insert(seq, (repeat, image));
+                Ok(Msg::Frame {
+                    seq,
+                    repeat,
+                    image,
+                    overlay,
+                }) => {
+                    pending.insert(seq, (repeat, image, overlay));
                 }
                 Ok(Msg::Finish { total: t }) => total = Some(t),
                 Err(_) => break,
@@ -359,10 +435,10 @@ impl Writer {
             if pending.len() > QUEUE_FRAMES * 2 {
                 next = *pending.keys().next().unwrap();
             }
-            while let Some((repeat, image)) = pending.remove(&next) {
+            while let Some((repeat, image, overlay)) = pending.remove(&next) {
                 next += 1;
                 if self.error.is_none()
-                    && let Err(e) = self.write(*image, repeat)
+                    && let Err(e) = self.write(*image, repeat, overlay)
                 {
                     self.error = Some(e);
                 }
@@ -371,7 +447,7 @@ impl Writer {
         *result.lock().unwrap() = Some(self.finish());
     }
 
-    fn write(&mut self, image: Image, repeat: u32) -> Result<(), String> {
+    fn write(&mut self, image: Image, repeat: u32, overlay: Option<Overlay>) -> Result<(), String> {
         let mut rgba = to_rgba(image)?;
         if self.encoder.is_none() {
             let (width, height) = rgba.dimensions();
@@ -387,10 +463,22 @@ impl Writer {
                 image::imageops::FilterType::Triangle,
             );
         }
-        for _ in 0..repeat {
+        // A ripple keeps moving through repeated frames; everything else is
+        // drawn once.
+        let mut drawn: Option<image::RgbaImage> = None;
+        for k in 0..repeat {
+            if let Some(overlay) = &overlay
+                && (drawn.is_none() || overlay.is_animated())
+            {
+                let mut frame = rgba.clone();
+                overlay
+                    .advanced(k as f32 / self.fps as f32)
+                    .draw(&mut frame);
+                drawn = Some(frame);
+            }
             encoder
                 .stdin
-                .write_all(rgba.as_raw())
+                .write_all(drawn.as_ref().unwrap_or(&rgba).as_raw())
                 .map_err(|e| format!("writing to ffmpeg: {e}"))?;
             self.frames += 1;
         }
@@ -479,6 +567,9 @@ struct StartParams {
     camera: Option<u64>,
     #[serde(default)]
     window: Option<u64>,
+    /// Draw the mouse cursor and click ripples onto the video.
+    #[serde(default)]
+    cursor: bool,
 }
 
 /// `harness.record.start`
@@ -490,6 +581,7 @@ pub fn start_method(In(params): In<Option<Value>>, world: &mut World) -> BrpResu
         path,
         fps: p.fps.unwrap_or(DEFAULT_FPS),
         max_seconds: p.max_seconds.unwrap_or(DEFAULT_MAX_SECONDS),
+        cursor: p.cursor,
     };
     start(world, target, opts).map_err(invalid_params)?;
     Ok(world.resource::<Recorder>().status())

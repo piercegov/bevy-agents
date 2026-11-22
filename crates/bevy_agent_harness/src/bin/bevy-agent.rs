@@ -289,6 +289,11 @@ enum RecordCmd {
         /// Stop automatically after this many seconds of game time (default 120).
         #[arg(long)]
         max_seconds: Option<f64>,
+        /// Draw the mouse onto the video: a cursor arrow, a highlight while a button
+        /// is held and a ripple on each press. Use it when the demo involves the
+        /// mouse; the game itself and screenshots are not affected.
+        #[arg(long)]
+        cursor: bool,
         /// Record what this camera renders.
         #[arg(long)]
         camera: Option<String>,
@@ -1345,6 +1350,7 @@ fn run(cli: Cli) -> Result<()> {
             out: path,
             fps,
             max_seconds,
+            cursor,
             camera,
             window,
         }) => {
@@ -1356,6 +1362,9 @@ fn run(cli: Cli) -> Result<()> {
             }
             if let Some(max) = max_seconds {
                 params["max_seconds"] = json!(max);
+            }
+            if cursor {
+                params["cursor"] = json!(true);
             }
             if let Some(c) = camera {
                 params["camera"] = json!(entity_bits(&client, &c)?);

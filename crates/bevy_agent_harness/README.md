@@ -73,6 +73,7 @@ bevy-agent mouse drag 900 250 400 450 --button right --frames 60    smooth drag 
 bevy-agent mouse move 400 300 --frames 30    glide the cursor instead of jumping
 bevy-agent screenshot -o shot.png       captured by the game's renderer, saved as PNG
 bevy-agent record start -o demo.mp4     record a video (needs ffmpeg); `record stop` finishes the file
+bevy-agent record start --cursor        ...with a mouse cursor and click ripples drawn onto the video
 bevy-agent record stop --share          ...and print a link that plays it in a browser
 bevy-agent share demo.mp4               serve a video or screenshot on localhost (`--bind` to widen)
 bevy-agent logs --level warn --follow   captured log output (needs the LogPlugin line above)
@@ -157,6 +158,7 @@ fn title_screen_looks_right() {
 - `screenshot()`, `save_screenshot(path)`, `assert_golden(name)`, `assert_golden_with(name, GoldenOptions)`.
   Missing golden files are created on first run; `UPDATE_GOLDEN=1` rewrites them; failures write
   `tests/golden/__failures__/<name>.actual.png` and `.diff.png`.
+- `start_recording_with(RecordOptions::new(path).cursor(true))` adds the mouse overlay.
 - `start_recording(path)`, `stop_recording()`: a video of the frames advanced in between
   (rendering tests only, needs `ffmpeg`).
 
@@ -237,6 +239,9 @@ change, inspect state, inject input, or write gameplay tests.
   means a paused game adds nothing, stepped frames come out evenly spaced however slow capture
   is, and a slow real-time frame is repeated instead of speeding the video up. The file
   extension picks the format: mp4/mov/mkv (H.264), webm (VP9) or gif.
+  With `cursor: true` each frame carries the cursor position (as a fraction of the window),
+  whether a button is down and the presses still rippling; the encoder thread paints an arrow,
+  a hold highlight and expanding rings onto the pixels, so the game world is never touched.
 - `share` (and `record stop --share`) re-runs the CLI in the background as a small HTTP server
   for one file: a player page at `/` and the file itself with Range support, which browsers
   need for video. It binds to 127.0.0.1 unless told otherwise (`--bind <ip>` or

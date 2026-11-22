@@ -61,6 +61,54 @@ fn records_one_video_frame_per_game_frame() {
 }
 
 #[test]
+fn cursor_overlay_is_drawn_on_the_video_only() {
+    if !ffmpeg_available() {
+        eprintln!("skipping: ffmpeg not found");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("bevy_agent_cursor_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (video, frame) = (dir.join("cursor.mp4"), dir.join("frame.png"));
+
+    let mut app = TestApp::with_rendering(200, 100);
+    app.add_plugins(|app: &mut App| {
+        app.insert_resource(ClearColor(Color::srgb(0.0, 0.0, 1.0)))
+            .add_systems(Startup, |mut commands: Commands| {
+                commands.spawn(Camera2d);
+            });
+    });
+    app.advance(3);
+    app.move_cursor(Vec2::new(150.0, 30.0));
+    app.start_recording_with(
+        bevy_agent_harness::harness::record::RecordOptions::new(&video).cursor(true),
+    );
+    app.advance(5);
+    let info = app.stop_recording();
+    assert_eq!(info["frames"], 5, "{info}");
+
+    // The game's own picture has no cursor in it.
+    let clean = app.screenshot();
+    let body = clean.get_pixel(152, 36);
+    assert!(body[2] > 200 && body[0] < 50, "screenshot {body:?}");
+
+    // The video does: white arrow body just below the cursor position.
+    let status = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-i"])
+        .arg(&video)
+        .args(["-frames:v", "1", "-update", "1"])
+        .arg(&frame)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let shot = image::open(&frame).unwrap().to_rgba8();
+    let body = shot.get_pixel(152, 36);
+    assert!(body[0] > 180 && body[1] > 180, "video {body:?}");
+    let far = shot.get_pixel(40, 70);
+    assert!(far[2] > 180 && far[0] < 70, "video background {far:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn rejects_unknown_formats() {
     let mut app = TestApp::with_rendering(64, 64);
     app.add_plugins(scene);

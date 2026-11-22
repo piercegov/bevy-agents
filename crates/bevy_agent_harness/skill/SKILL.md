@@ -156,6 +156,10 @@ For mouse-driven features (camera pan, dragging objects, hover effects) use
 out, with both cursor and relative-motion input like a real mouse. While the game is paused
 these step it for exactly the frames they take, so they need no separate `step` and show up
 in the recording. A plain `mouse move` or `click` jumps instantly, which looks wrong on video.
+Add `--cursor` to `record start` for these demos: the video then shows a cursor arrow, a
+highlight while a button is held and a ripple on every press, so the viewer can see what the
+mouse did. It is drawn onto the video only, never into the game or its screenshots. Leave it
+off when the game draws its own cursor or the mouse plays no part.
 
 `--share` starts a small background web server for that one file and prints a link to a page
 that plays it; pass the link on to the user. `bevy-agent share FILE` does the same for a video
@@ -188,7 +192,7 @@ after 60 minutes without a request (`--idle-minutes`).
 | Mouse | `bevy-agent click 300 200`, `mouse move x y`, `mouse motion dx dy`, `mouse down|up`, `mouse scroll 1` |
 | Drag / pan / smooth cursor | `bevy-agent mouse drag 900 250 400 450 --button right --frames 60`, `--via 300,150` to curve, `mouse move 400 300 --frames 30` to glide without a button |
 | Screenshot | `bevy-agent screenshot -o /tmp/shot.png` (then look at it) |
-| Demo video | `bevy-agent pause`, `record start -o /tmp/demo.mp4`, inputs + `step N`, `record stop --share` |
+| Demo video | `bevy-agent pause`, `record start -o /tmp/demo.mp4` (`--cursor` to show the mouse and clicks), inputs + `step N`, `record stop --share` |
 | Link to a video or screenshot | `bevy-agent share /tmp/demo.mp4`, `share shot.png --bind tailscale` |
 | Logs | `bevy-agent logs`, `logs --level error`, `logs --grep collision`, `logs --follow`, `logs --clear` |
 | Time | `bevy-agent pause`, `resume`, `step 10`, `step 1 --dt 0.1`, `speed 0.25`, `wait 30` |

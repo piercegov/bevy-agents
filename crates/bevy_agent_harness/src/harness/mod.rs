@@ -4,6 +4,7 @@ pub mod headless;
 pub mod input;
 pub mod logs;
 mod observe;
+mod overlay;
 pub mod record;
 pub mod screenshot;
 pub mod step;
@@ -42,7 +43,7 @@ use serde_json::{Value, json};
 /// | `harness.wait_frame+watch` | `{ "until_frame": n }` | status once the frame is reached |
 /// | `harness.screenshot` | `{ "path"?: "abs.png", "camera"?: entity, "window"?: entity }` | `{ "id": n }` |
 /// | `harness.screenshot.result+watch` | `{ "id": n }` | `{ "path" }` or `{ "png_base64", "width", "height" }` |
-/// | `harness.record.start` | `{ "path": "abs.mp4", "fps"?: 60, "max_seconds"?: 120, "camera"?: entity, "window"?: entity }` | `{ "path", "fps", "frames", "seconds" }` |
+/// | `harness.record.start` | `{ "path": "abs.mp4", "fps"?: 60, "max_seconds"?: 120, "cursor"?: false, "camera"?: entity, "window"?: entity }` | `{ "path", "fps", "frames", "seconds" }` |
 /// | `harness.record.stop` | – | the recording's progress, or null if it had already stopped |
 /// | `harness.record.result+watch` | – | `{ "path", "width", "height", "fps", "frames", "seconds", "bytes" }` once the file is finished |
 pub struct AgentHarnessPlugin {
