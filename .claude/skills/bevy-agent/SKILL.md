@@ -152,9 +152,11 @@ recording; stopping the game finishes the file first.
 
 `--share` starts a small background web server for that one file and prints a link to a page
 that plays it; pass the link on to the user. `bevy-agent share FILE` does the same for a video
-or screenshot you already have. By default the link only works on the machine running the
-command. If the user is on another device, add `--bind tailscale` (this machine's Tailscale
-address) or `--bind <ip>`; `BEVY_AGENT_SHARE_BIND` sets the default. Anyone who can reach
+or screenshot you already have. By default the link is a localhost address on the machine
+running the command. That is enough when the user sits at that machine, or reaches it through
+a terminal that forwards localhost links by itself (Rex does) or an `ssh -L` forward, so try it
+first. Only if the user cannot open it, add `--bind tailscale` (this machine's Tailscale address)
+or `--bind <ip>`; `BEVY_AGENT_SHARE_BIND` sets the default. Anyone who can reach
 that address can see the file, so do not bind wider than the user asked for. The server exits
 after 60 minutes without a request (`--idle-minutes`).
 

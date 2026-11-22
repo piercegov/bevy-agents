@@ -951,8 +951,9 @@ impl ShareLink {
         );
         if self.local_only {
             println!(
-                "note: that address only works on this machine; for another device use \
-                 `--bind tailscale` (or an IP of this machine), or forward the port"
+                "note: this is a localhost address. On another device it works where the port is \
+                 forwarded (Rex does that itself when the link is opened from its terminal; \
+                 `ssh -L` also works); otherwise share with `--bind tailscale` or `--bind <ip>`"
             );
         }
     }

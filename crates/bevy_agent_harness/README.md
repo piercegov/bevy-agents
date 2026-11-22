@@ -72,7 +72,7 @@ bevy-agent mouse move|motion|down|up|scroll
 bevy-agent screenshot -o shot.png       captured by the game's renderer, saved as PNG
 bevy-agent record start -o demo.mp4     record a video (needs ffmpeg); `record stop` finishes the file
 bevy-agent record stop --share          ...and print a link that plays it in a browser
-bevy-agent share demo.mp4               serve a video or screenshot; `--bind tailscale` for other devices
+bevy-agent share demo.mp4               serve a video or screenshot on localhost (`--bind` to widen)
 bevy-agent logs --level warn --follow   captured log output (needs the LogPlugin line above)
 bevy-agent pause / resume / step 10     freeze Time<Virtual>; step advances 10 frames at fixed dt
 bevy-agent wait 30                      block until 30 more frames have run
