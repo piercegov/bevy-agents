@@ -375,6 +375,70 @@ impl BrpClient {
         self.call("registry.schema", Some(params))
     }
 
+    // ---- events, messages, schedules --------------------------------------
+
+    /// Type paths of events that can be triggered and observed (`#[reflect(Event)]`).
+    pub fn registered_events(&self) -> Result<Vec<String>> {
+        Ok(serde_json::from_value(self.call(
+            "harness.types",
+            Some(json!({ "kind": "event" })),
+        )?)?)
+    }
+
+    /// Type paths of messages that can be written (`#[reflect(Message)]`).
+    pub fn registered_messages(&self) -> Result<Vec<String>> {
+        Ok(serde_json::from_value(self.call(
+            "harness.types",
+            Some(json!({ "kind": "message" })),
+        )?)?)
+    }
+
+    pub fn resolve_event(&self, name: &str) -> Result<String> {
+        resolve_in(name, &self.registered_events()?, "event")
+    }
+
+    pub fn resolve_message(&self, name: &str) -> Result<String> {
+        resolve_in(name, &self.registered_messages()?, "message")
+    }
+
+    /// Trigger an observer event. `event` is a full type path; `value` its
+    /// reflected shape (omit for unit-like events).
+    pub fn trigger_event(&self, event: &str, value: Option<Value>) -> Result<()> {
+        let mut p = json!({ "event": event });
+        if let Some(v) = value {
+            p["value"] = v;
+        }
+        self.call("world.trigger_event", Some(p))?;
+        Ok(())
+    }
+
+    /// Write a buffered message; systems read it during the next frame.
+    pub fn write_message(&self, message: &str, value: Option<Value>) -> Result<()> {
+        let mut p = json!({ "message": message });
+        if let Some(v) = value {
+            p["value"] = v;
+        }
+        self.call("world.write_message", Some(p))?;
+        Ok(())
+    }
+
+    /// Events recorded since the previous call (the first call starts recording).
+    /// Returns `{ recording_started, events, dropped }`.
+    pub fn recorded_events(&self, event: &str, entity: Option<u64>) -> Result<Value> {
+        self.call("harness.events", Some(observe_params(event, entity)))
+    }
+
+    /// `{ schedule_labels, unavailable_schedule_labels, empty_schedule_labels }`.
+    pub fn schedule_list(&self) -> Result<Value> {
+        self.call("schedule.list", None)
+    }
+
+    /// Systems, sets, ordering and conflicts of one schedule (`schedule_data`).
+    pub fn schedule_graph(&self, label: &str) -> Result<Value> {
+        let v = self.call("schedule.graph", Some(json!({ "schedule_label": label })))?;
+        Ok(v.get("schedule_data").cloned().unwrap_or(v))
+    }
+
     /// Entity hierarchy with names and (optionally) component lists.
     pub fn entity_tree(&self, with_components: bool) -> Result<Vec<EntityNode>> {
         let rows = self.query(
@@ -536,6 +600,15 @@ pub struct EntityNode {
     pub parent: Option<u64>,
     pub children: Vec<u64>,
     pub components: Vec<String>,
+}
+
+/// Params shared by `world.observe+watch` and `harness.events`.
+pub fn observe_params(event: &str, entity: Option<u64>) -> Value {
+    let mut p = json!({ "event": event });
+    if let Some(e) = entity {
+        p["entity"] = json!(e);
+    }
+    p
 }
 
 fn resolve_in(name: &str, registry: &[String], kind: &str) -> Result<String> {

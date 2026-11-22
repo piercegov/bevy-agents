@@ -28,6 +28,8 @@ use serde_json::{Value, json};
 /// | `harness.input.mouse` | `{ "button": "Left", "state": "tap"\|"press"\|"release", "position"?: [x, y] }` | `{ "queued": n }` |
 /// | `harness.input.cursor` | `{ "position": [x, y] }` | `{ "queued": n }` |
 /// | `harness.input.scroll` | `{ "x"?: 0, "y": 1, "unit"?: "line"\|"pixel" }` | `{ "queued": n }` |
+/// | `harness.events` | `{ "event": "path::Event", "entity"?: entity }` | `{ "recording_started", "events": [...], "dropped" }` |
+/// | `harness.types` | `{ "kind": "event"\|"message" }` | `["path::Type", ...]` |
 /// | `harness.logs` | `{ "since"?: seq, "level"?: "warn", "limit"?: 200, "contains"?: "..", "target"?: ".." }` | `{ "entries": [...], "next": seq, ... }` |
 /// | `harness.logs.clear` | – | null |
 /// | `harness.pause` / `harness.resume` | – | status |
@@ -83,6 +85,8 @@ impl Plugin for AgentHarnessPlugin {
         } else {
             let remote = RemotePlugin::default()
                 .with_watching_method_main("world.observe+watch", observe::watch)
+                .with_method_main("harness.events", observe::events)
+                .with_method_main("harness.types", observe::types)
                 .with_method_main("harness.status", status)
                 .with_method_main("harness.input", input::inject_batch)
                 .with_method_main("harness.input.key", input::inject_key)

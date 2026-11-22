@@ -16,6 +16,8 @@ the raw protocol does not.
 | `harness.input.cursor` | `{ position?: [x, y], delta?: [dx, dy], delay? }` | `{ queued, horizon_frames }` |
 | `harness.input.scroll` | `{ x?: 0, y: 1, unit?: "line"\|"pixel", delay? }` | `{ queued, horizon_frames }` |
 | `harness.input` | `{ actions: [Action \| { delay, action: Action }] }` where `Action` is `{kind: "key", key, state: "Pressed"\|"Released"}`, `{kind: "mouse_button", button, state}`, `{kind: "cursor", position}`, `{kind: "motion", delta}`, `{kind: "scroll", x, y, unit}` | `{ queued, horizon_frames }` |
+| `harness.types` | `{ kind: "event"\|"message" }` | `[type_path, ...]` usable with `world.trigger_event` / `world.write_message` |
+| `harness.events` | `{ event: type_path, entity?: entity }` | `{ recording_started, events: [value, ...], dropped }`; the first call per `(event, entity)` starts recording, later calls return and remove what was recorded since |
 | `harness.logs` | `{ since?: seq, level?: "error"\|"warn"\|"info"\|"debug"\|"trace", limit?: 200, contains?: str, target?: prefix }` | `{ entries: [{seq, t, level, target, message}], next, matched, dropped }` |
 | `harness.logs.clear` | none | `null` |
 | `harness.pause` | none | status |
@@ -41,6 +43,17 @@ Built-in BRP methods (from Bevy): `world.query`, `world.get_components`, `world.
 `world.spawn_entity`, `world.despawn_entity`, `world.insert_components`,
 `world.remove_components`, `world.mutate_components`, `world.reparent_entities`,
 `world.get_resources`, `world.list_resources`, `world.insert_resources`,
-`world.remove_resources`, `world.mutate_resources`, `world.trigger_event`, `registry.schema`,
-`rpc.discover`, plus `world.get_components+watch` and `world.list_components+watch`.
+`world.remove_resources`, `world.mutate_resources`, `registry.schema`, `rpc.discover`, plus
+`world.get_components+watch` and `world.list_components+watch`.
+
+Events, messages and schedules:
+
+| method | params | result |
+|---|---|---|
+| `world.trigger_event` | `{ event: type_path, value?: reflected value }` | `null`; observers have run when it returns |
+| `world.write_message` | `{ message: type_path, value?: reflected value }` | `null`; written after the current frame's systems, read next frame |
+| `world.observe+watch` | `{ event: type_path, entity?: entity }` | stream of `[value, ...]` batches; `{"$error", "$dropped"}` entries mark overflow or unserializable events. Shares its recording with `harness.events` |
+| `schedule.list` | none | `{ schedule_labels, empty_schedule_labels, unavailable_schedule_labels }` |
+| `schedule.graph` | `{ schedule_label: "Update" }` | `{ schedule_data: { name, systems: [{name, exclusive, ...}], system_sets, hierarchy: [[set, node]], dependency: [[first, second]], components, conflicts } }` where a node is `{"System": i}` or `{"SystemSet": i}` |
+
 `bevy-agent methods` lists what the running game actually exposes.

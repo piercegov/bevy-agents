@@ -6,6 +6,9 @@
 //! bevy-agent ls --short
 //! bevy-agent key Space          # player takes damage
 //! bevy-agent click 200 100      # spawns a coin at the cursor
+//! bevy-agent event trigger Heal '{"amount": 5}'
+//! bevy-agent message write SpawnCoin '{"x": 0, "y": 50}'
+//! bevy-agent event read PlayerDamaged   # start recording, then `key space`, then read again
 //! bevy-agent screenshot -o /tmp/demo.png
 //! bevy-agent logs
 //! ```
@@ -34,6 +37,28 @@ struct Coin;
 #[reflect(Resource)]
 struct Score(u32);
 
+/// Trigger to restore health: `bevy-agent event trigger Heal '{"amount": 5}'`.
+#[derive(Event, Reflect, Debug)]
+#[reflect(Event)]
+struct Heal {
+    amount: f32,
+}
+
+/// Triggered by the game whenever the player loses health.
+#[derive(Event, Reflect, Debug)]
+#[reflect(Event)]
+struct PlayerDamaged {
+    health: f32,
+}
+
+/// Write to spawn a coin at a world position.
+#[derive(Message, Reflect, Debug)]
+#[reflect(Message)]
+struct SpawnCoin {
+    x: f32,
+    y: f32,
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(LogPlugin {
@@ -46,11 +71,22 @@ fn main() {
         .register_type::<Speed>()
         .register_type::<Coin>()
         .register_type::<Score>()
+        .register_type::<Heal>()
+        .register_type::<PlayerDamaged>()
+        .register_type::<SpawnCoin>()
+        .add_message::<SpawnCoin>()
+        .add_observer(heal)
         .init_resource::<Score>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (movement, take_damage, spawn_coin_on_click, collect_coins),
+            (
+                movement,
+                take_damage,
+                spawn_coin_on_click,
+                spawn_requested_coins,
+                collect_coins,
+            ),
         )
         .run();
 }
@@ -107,10 +143,33 @@ fn movement(
     }
 }
 
-fn take_damage(keys: Res<ButtonInput<KeyCode>>, mut player: Query<&mut Health, With<Player>>) {
+fn heal(heal: On<Heal>, mut player: Query<&mut Health, With<Player>>) {
+    for mut h in &mut player {
+        h.0 = (h.0 + heal.amount).min(100.0);
+        info!("healed {}, health now {}", heal.amount, h.0);
+    }
+}
+
+fn spawn_requested_coins(mut requests: MessageReader<SpawnCoin>, mut commands: Commands) {
+    for request in requests.read() {
+        commands.spawn((
+            Name::new("Coin (requested)"),
+            Coin,
+            Sprite::from_color(Color::srgb(1.0, 0.9, 0.1), Vec2::splat(16.0)),
+            Transform::from_xyz(request.x, request.y, 0.0),
+        ));
+    }
+}
+
+fn take_damage(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut player: Query<&mut Health, With<Player>>,
+    mut commands: Commands,
+) {
     if keys.just_pressed(KeyCode::Space) {
         for mut h in &mut player {
             h.0 -= 10.0;
+            commands.trigger(PlayerDamaged { health: h.0 });
             if h.0 <= 0.0 {
                 error!("player died");
             } else {

@@ -41,6 +41,10 @@ separate from an unknown type or unreadable nested value. Registration alone can
 serialize opaque third-party data; expose a small reflectable debug summary when needed.
 Nested values/handles may need serialization support. `ls --with Foo` also needs type registration.
 
+Events and messages you want to trigger, write or observe need `#[derive(Reflect)]` with
+`#[reflect(Event)]` / `#[reflect(Message)]`. `bevy-agent event ls` and `message ls` show what
+the running game exposes.
+
 ## Choose the smallest useful verification
 
 Use ordinary `App`/`MinimalPlugins` tests for small rules. Use TestApp for scheduling,
@@ -79,17 +83,41 @@ bevy-agent get @Player Transform --short
 bevy-agent resume
 ```
 
+Commands exit non-zero when the thing you asked about is not there, so `&&` chains and `if`
+work as checks:
+
+```sh
+bevy-agent get @Player Stunned && echo "player is stunned"   # exit 1: Stunned is not present
+```
+
+`get <entity> <Component>...` prints whatever it could read and then exits 1 with
+`error: ... Stunned is not present` on stderr if any *named* component is missing or
+unreadable. A bare `get @Player` (no component names) exits 0 and reports unreadable
+components inline as `"$error"`. `event read --expect` exits 1 when nothing was recorded.
+
+To check that an event fired, start recording *before* the action, then read:
+
+```sh
+bevy-agent event read PlayerDamaged            # first read starts recording
+bevy-agent key space
+bevy-agent event read PlayerDamaged --expect   # prints the events; exit 1 if there were none
+```
+
 ## Command cheatsheet
 
 | Need | Command |
 |---|---|
 | What is running | `bevy-agent status` |
 | Entity tree (names, components) | `bevy-agent ls --short`, `ls --with Enemy`, `ls --all` for internals |
-| One entity | `bevy-agent get @Player`, `get 424v0 Transform Health` |
+| One entity | `bevy-agent get @Player`, `get 424v0 Transform Health`, `get @Player --all` for plumbing components |
 | Query | `bevy-agent query --with Enemy -d Transform -d Health --short` |
 | Change a field | `bevy-agent mutate @Player Transform translation.x 100` |
 | Spawn / edit | `spawn '{"Coin":{},"Transform":{...}}'`, `insert`, `remove`, `despawn`, `reparent` |
 | Resources | `bevy-agent resource ls`, `resource get Score`, `resource set`, `resource mutate` |
+| Trigger an event | `bevy-agent event ls`, `event trigger Heal '{"amount": 5}'` (observers run immediately) |
+| Did an event fire | `bevy-agent event read PlayerDamaged` before the action, `event read PlayerDamaged --expect` after; `event watch Foo -n 1` to stream |
+| Write a message | `bevy-agent message ls`, `message write SpawnCoin '{"x": 0, "y": 50}'` (systems read it next frame) |
+| Is my system scheduled | `bevy-agent schedule ls`, `schedule graph Update --grep my_game --short` |
 | Type layout | `bevy-agent schema Health` |
 | Keyboard | `bevy-agent key space`, `key w a s d`, `key --down w`, `key --up w`, `key --hold 10 space` |
 | Mouse | `bevy-agent click 300 200`, `mouse move x y`, `mouse motion dx dy`, `mouse down|up`, `mouse scroll 1` |
@@ -162,12 +190,26 @@ in the game plugin under `cfg(test)` or accept the warnings in the log.
   the file, so it must be able to reach that path.
 - `pause` freezes `Time<Virtual>`; systems still run every frame, so anything not driven by
   `Time` (or `FixedUpdate`) keeps going. Use `step` for controlled progress.
-- `ls` hides Bevy-internal entities and plumbing components. Pass `--all` when hunting for
-  something unusual.
+- `ls` hides Bevy-internal entities and plumbing components, and a bare `get @Player` leaves
+  out plumbing components (`GlobalTransform`, `Aabb`, visibility and render bookkeeping) and
+  says how many it hid. Name the component (`get @Hat GlobalTransform`) or pass `--all`
+  (alias `--verbose`) to see them.
+- Human-readable output keeps vectors on one line and is still valid JSON, but use `--json` when
+  parsing: it is never filtered.
 - `mutate` paths follow `bevy_reflect` syntax: `translation.x`, `.0` for tuple structs, `[2]` for
   lists. The error message tells you what the reflect type actually is.
 - BRP serializes with reflection, so `spawn`/`insert` values must match the reflected shape
   (`Transform` needs `translation`, `rotation`, `scale`). Use `schema <Type>` to see it.
+- Event and message values use the reflected shape, like `spawn` (`schema <Type>` shows it; omit
+  the value for types without fields). An entity event names its target inside the value as a
+  u64 id: `event trigger Explode '{"entity": 4294966870}'`; `@Name` does not work inside JSON.
+- `event read` and `event watch` only see observer events (`commands.trigger`, `world.trigger`).
+  Buffered messages (`MessageWriter`) can be written with `message write` but not read back;
+  check their effect on components, resources or logs instead.
+- `event read Foo` and `event read Foo --entity @X` are separate recordings, each starting at its
+  own first read. A recording keeps the latest 1024 events and a game holds at most 64 recordings.
+- `schedule graph` lists systems with their sets and explicit `before`/`after` constraints, not
+  the order they run in. Schedules marked as running in `schedule ls` (`Main`) cannot be inspected.
 - Kill the game process when you are done. Leaving it running holds the port and the GPU.
 
 See `reference.md` next to this file for the raw `harness.*` JSON-RPC shapes when using `call`

@@ -72,6 +72,12 @@ bevy-agent mutate @Player Transform translation.x 100
 bevy-agent spawn '{"Coin": {}, "Transform": {...}, "Name": "Extra"}'
 bevy-agent insert|remove|despawn|reparent
 bevy-agent resource get Score / set / mutate / ls
+bevy-agent event ls / message ls        events and messages the game exposes (#[reflect(Event)] / #[reflect(Message)])
+bevy-agent event trigger Heal '{"amount": 5}'
+bevy-agent event read PlayerDamaged     events since the last read (first read starts recording); --expect exits 1 if none
+bevy-agent event watch PlayerDamaged    stream events; -n 2 stops after two
+bevy-agent message write SpawnCoin '{"x": 0, "y": 50}'
+bevy-agent schedule ls / graph Update   schedules, and a schedule's systems with sets and ordering
 bevy-agent schema Health                reflection schema of a type
 bevy-agent watch @Player Transform      stream changes
 bevy-agent call <method> '<json>'       any BRP method, raw
@@ -81,8 +87,15 @@ Global flags: `--url` (or `BEVY_AGENT_URL`), `--json` for machine-readable outpu
 strip module paths from type names, `--timeout`. Entities can be written as the u64 BRP id, as
 `index v generation` (what Bevy prints), or as `@Name`.
 
+Exit codes are usable as checks: `get @Player Stunned` prints what it could read and exits 1
+(with the reason on stderr) when a component you named is missing or unreadable, so
+`bevy-agent get @Player Stunned && ...` only continues if it is there. A bare `get @Player`
+exits 0 and reports unreadable components inline as `"$error"`.
+
 `ls` hides Bevy-internal entities (observers, registered systems, resources-as-entities) and
-plumbing components (`ViewVisibility`, `RenderEntity`, ...) unless you pass `--all`.
+plumbing components (`ViewVisibility`, `RenderEntity`, ...) unless you pass `--all`. A bare
+`get @Player` hides the same plumbing components (and says how many); name one or pass `--all`
+(alias `--verbose`) to see it. Output keeps vectors on one line; `--json` is strict, unfiltered JSON.
 
 ### 3. Write tests
 

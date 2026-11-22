@@ -58,15 +58,23 @@ enum Cmd {
         /// Print a flat list instead of a tree.
         #[arg(long)]
         flat: bool,
-        /// Include Bevy-internal entities (observers, registered systems, resources, monitors).
-        #[arg(long, short = 'a')]
+        /// Include Bevy-internal entities (observers, registered systems, resources, monitors)
+        /// and plumbing components.
+        #[arg(long, short = 'a', alias = "verbose")]
         all: bool,
     },
     /// Show an entity's components (all reflectable ones, or the given subset).
-    /// Entities can be given as `@Name`.
+    /// Entities can be given as `@Name`. Exits 1 if a component you asked for by
+    /// name is missing or unreadable, so `get @Player Stunned && ...` is a presence check.
+    ///
+    /// With no component names, plumbing components (GlobalTransform, Aabb,
+    /// visibility and render bookkeeping) are left out; name one or pass --all to see it.
     Get {
         entity: String,
         components: Vec<String>,
+        /// Include plumbing components when listing everything.
+        #[arg(long, short = 'a', alias = "verbose")]
+        all: bool,
     },
     /// Run a world.query and print matching entities.
     Query(QueryArgs),
@@ -206,6 +214,15 @@ enum Cmd {
         entity: String,
         components: Vec<String>,
     },
+    /// List, trigger and observe events (types with `#[reflect(Event)]`).
+    #[command(subcommand, alias = "events")]
+    Event(EventCmd),
+    /// List and write buffered messages (types with `#[reflect(Message)]`).
+    #[command(subcommand, alias = "messages")]
+    Message(MessageCmd),
+    /// List schedules and the systems in them.
+    #[command(subcommand, alias = "schedules")]
+    Schedule(ScheduleCmd),
     /// Print or install the bundled agent skill that teaches AI agents this workflow.
     #[command(subcommand)]
     Skill(SkillCmd),
@@ -293,6 +310,73 @@ enum ResourceCmd {
     },
     /// Remove a resource.
     Remove { name: String },
+}
+
+#[derive(Subcommand)]
+enum EventCmd {
+    /// List event types that can be triggered and observed.
+    Ls,
+    /// Trigger an event so its observers run, e.g. `event trigger Heal '{"amount": 5}'`.
+    /// Entity events carry their target in the value: `'{"entity": 4294966870, ...}'`.
+    Trigger {
+        event: String,
+        /// The event's value as JSON (omit for events without fields).
+        value: Option<String>,
+        /// Return immediately instead of waiting for the next frame.
+        #[arg(long)]
+        no_wait: bool,
+    },
+    /// Print events recorded since the last `read`. The first `read` of an event
+    /// starts recording, so call it once before the action you want to check.
+    Read {
+        event: String,
+        /// Only events targeting this entity (a separate recording from the global one).
+        #[arg(long, short)]
+        entity: Option<String>,
+        /// Exit 1 unless at least one event was recorded.
+        #[arg(long)]
+        expect: bool,
+    },
+    /// Stream events as they happen (Ctrl-C to stop, or --count).
+    Watch {
+        event: String,
+        #[arg(long, short)]
+        entity: Option<String>,
+        /// Stop after this many events.
+        #[arg(long, short = 'n')]
+        count: Option<usize>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MessageCmd {
+    /// List message types that can be written.
+    Ls,
+    /// Write a message for systems to read next frame, e.g. `message write SpawnCoin '{"x": 0, "y": 50}'`.
+    #[command(alias = "send")]
+    Write {
+        message: String,
+        /// The message's value as JSON (omit for messages without fields).
+        value: Option<String>,
+        /// Return immediately instead of waiting until systems have read it.
+        #[arg(long)]
+        no_wait: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ScheduleCmd {
+    /// List schedule labels.
+    Ls,
+    /// Systems of one schedule with their sets and ordering constraints.
+    #[command(alias = "systems")]
+    Graph {
+        /// Schedule label as printed by `schedule ls`, e.g. Update.
+        label: String,
+        /// Only systems whose name contains this text.
+        #[arg(long, short)]
+        grep: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -463,15 +547,61 @@ fn shorten_value(v: Value) -> Value {
     }
 }
 
+/// Valid JSON, indented like `to_string_pretty` except that arrays without
+/// nested arrays/objects stay on one line, so vectors, quaternions and
+/// matrices do not take a line per number.
+fn compact_json(v: &Value) -> String {
+    fn write(v: &Value, depth: usize, out: &mut String) {
+        let pad = "  ".repeat(depth + 1);
+        let close = "  ".repeat(depth);
+        match v {
+            Value::Array(a) if a.iter().any(|x| x.is_array() || x.is_object()) => {
+                out.push_str("[\n");
+                for (i, x) in a.iter().enumerate() {
+                    out.push_str(&pad);
+                    write(x, depth + 1, out);
+                    out.push_str(if i + 1 < a.len() { ",\n" } else { "\n" });
+                }
+                out.push_str(&close);
+                out.push(']');
+            }
+            Value::Array(a) => {
+                let items: Vec<String> = a.iter().map(Value::to_string).collect();
+                out.push_str(&format!("[{}]", items.join(", ")));
+            }
+            Value::Object(m) if !m.is_empty() => {
+                out.push_str("{\n");
+                for (i, (k, x)) in m.iter().enumerate() {
+                    out.push_str(&format!("{pad}{}: ", Value::from(k.as_str())));
+                    write(x, depth + 1, out);
+                    out.push_str(if i + 1 < m.len() { ",\n" } else { "\n" });
+                }
+                out.push_str(&close);
+                out.push('}');
+            }
+            other => out.push_str(&other.to_string()),
+        }
+    }
+    let mut out = String::new();
+    write(v, 0, &mut out);
+    out
+}
+
 struct Out {
     json: bool,
     short: bool,
 }
 
 impl Out {
+    /// Strict pretty JSON with `--json`; otherwise the same data with arrays of
+    /// plain values kept on one line (`"translation": [1.0, 2.0, 0.0]`).
     fn value(&self, v: Value) {
         let v = if self.short { shorten_value(v) } else { v };
-        println!("{}", serde_json::to_string_pretty(&v).unwrap());
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&v).unwrap());
+        } else {
+            println!("{}", compact_json(&v));
+        }
     }
     fn name(&self, s: &str) -> String {
         if self.short {
@@ -534,10 +664,22 @@ fn run(cli: Cli) -> Result<()> {
                 print_tree(&nodes, no_components, out.short, all);
             }
         }
-        Cmd::Get { entity, components } => {
+        Cmd::Get {
+            entity,
+            components,
+            all,
+        } => {
             let e = entity_bits(&client, &entity)?;
+            let mut hidden = 0;
             let v = if components.is_empty() {
-                Value::Object(client.get_all_components(e)?)
+                let mut map = client.get_all_components(e)?;
+                // `--json` is for parsing and always carries everything.
+                if !all && !out.json {
+                    let before = map.len();
+                    map.retain(|name, _| !is_noise(name));
+                    hidden = before - map.len();
+                }
+                Value::Object(map)
             } else {
                 let comps = client.resolve_components(&components)?;
                 let r = client.get_components(e, &comps, false)?;
@@ -546,7 +688,22 @@ fn run(cli: Cli) -> Result<()> {
             if !out.json {
                 println!("entity {} ({})", e, format_entity(e));
             }
+            // Only components asked for by name count as failures: a bare `get` lists
+            // everything on the entity, where unreadable components are routine.
+            let failed = if components.is_empty() {
+                Vec::new()
+            } else {
+                failed_components(&v)
+            };
             out.value(v);
+            if hidden > 0 {
+                println!(
+                    "({hidden} plumbing component(s) hidden; name one or pass --all to see them)"
+                );
+            }
+            if !failed.is_empty() {
+                bail!("entity {} ({}): {}", e, format_entity(e), failed.join("; "));
+            }
         }
         Cmd::Query(q) => {
             let data = json!({
@@ -569,7 +726,7 @@ fn run(cli: Cli) -> Result<()> {
                     body.as_object_mut().map(|m| m.remove("entity"));
                     let body = if out.short { shorten_value(body) } else { body };
                     println!("--- {} ({})", e, format_entity(e));
-                    println!("{}", serde_json::to_string_pretty(&body)?);
+                    println!("{}", compact_json(&body));
                 }
             }
         }
@@ -900,6 +1057,163 @@ fn run(cli: Cli) -> Result<()> {
                 },
             )?;
         }
+        Cmd::Event(cmd) => match cmd {
+            EventCmd::Ls => {
+                let list = client.registered_events()?;
+                if out.json {
+                    out.value(json!(list));
+                } else {
+                    for e in list {
+                        println!("{}", out.name(&e));
+                    }
+                }
+            }
+            EventCmd::Trigger {
+                event,
+                value,
+                no_wait,
+            } => {
+                let event = client.resolve_event(&event)?;
+                let value = value.as_deref().map(parse_json).transpose()?;
+                client.trigger_event(&event, value)?;
+                if !no_wait {
+                    client.wait_frames(1, timeout)?;
+                }
+                ok(&out);
+            }
+            EventCmd::Read {
+                event,
+                entity,
+                expect,
+            } => {
+                let event = client.resolve_event(&event)?;
+                let entity = entity
+                    .as_deref()
+                    .map(|e| entity_bits(&client, e))
+                    .transpose()?;
+                let r = client.recorded_events(&event, entity)?;
+                let started = r["recording_started"].as_bool().unwrap_or(false);
+                let events = r["events"].as_array().cloned().unwrap_or_default();
+                let dropped = r["dropped"].as_u64().unwrap_or(0);
+                if out.json {
+                    out.value(r);
+                } else {
+                    if dropped > 0 {
+                        eprintln!(
+                            "warning: {dropped} older event(s) were dropped (buffer overflow)"
+                        );
+                    }
+                    print_events(&events, out.short);
+                    if started {
+                        println!(
+                            "recording {} from now on; run `event read` again after your action",
+                            short_name(&event)
+                        );
+                    } else {
+                        println!("{} event(s) since the last read", events.len());
+                    }
+                }
+                if expect && events.is_empty() {
+                    if started {
+                        bail!(
+                            "no {} events: recording only just started, so earlier ones were not seen",
+                            short_name(&event)
+                        );
+                    }
+                    bail!("no {} events since the last read", short_name(&event));
+                }
+            }
+            EventCmd::Watch {
+                event,
+                entity,
+                count,
+            } => {
+                let event = client.resolve_event(&event)?;
+                let entity = entity
+                    .as_deref()
+                    .map(|e| entity_bits(&client, e))
+                    .transpose()?;
+                let mut seen = 0;
+                client.watch(
+                    "world.observe+watch",
+                    Some(bevy_agent_harness::client::observe_params(&event, entity)),
+                    None,
+                    |r| {
+                        match r {
+                            Ok(v) => {
+                                let batch = v.as_array().cloned().unwrap_or_else(|| vec![v]);
+                                seen += print_events(&batch, out.short);
+                            }
+                            Err(e) => eprintln!("error: {e}"),
+                        }
+                        std::io::stdout().flush().ok();
+                        count.is_none_or(|c| seen < c)
+                    },
+                )?;
+            }
+        },
+        Cmd::Message(cmd) => match cmd {
+            MessageCmd::Ls => {
+                let list = client.registered_messages()?;
+                if out.json {
+                    out.value(json!(list));
+                } else {
+                    for m in list {
+                        println!("{}", out.name(&m));
+                    }
+                }
+            }
+            MessageCmd::Write {
+                message,
+                value,
+                no_wait,
+            } => {
+                let message = client.resolve_message(&message)?;
+                let value = value.as_deref().map(parse_json).transpose()?;
+                client.write_message(&message, value)?;
+                if !no_wait {
+                    // Written after this frame's systems; readers see it next frame.
+                    client.wait_frames(1, timeout)?;
+                }
+                ok(&out);
+            }
+        },
+        Cmd::Schedule(cmd) => match cmd {
+            ScheduleCmd::Ls => {
+                let r = client.schedule_list()?;
+                if out.json {
+                    out.value(r);
+                } else {
+                    for (key, note) in [
+                        ("schedule_labels", ""),
+                        ("empty_schedule_labels", "  (no systems)"),
+                        (
+                            "unavailable_schedule_labels",
+                            "  (running; cannot be inspected)",
+                        ),
+                    ] {
+                        let mut labels: Vec<&str> = r[key]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .collect();
+                        labels.sort_unstable();
+                        for l in labels {
+                            println!("{l}{note}");
+                        }
+                    }
+                }
+            }
+            ScheduleCmd::Graph { label, grep } => {
+                let data = client.schedule_graph(&label)?;
+                if out.json {
+                    out.value(data);
+                } else {
+                    print_schedule(&data, grep.as_deref(), out.short);
+                }
+            }
+        },
         Cmd::Skill(cmd) => match cmd {
             SkillCmd::Print { reference } => {
                 print!(
@@ -1005,6 +1319,120 @@ fn run(cli: Cli) -> Result<()> {
         },
     }
     Ok(())
+}
+
+/// `Name: reason` for every entry of a `get` result that carries a `$error`.
+fn failed_components(result: &Value) -> Vec<String> {
+    let Some(map) = result.as_object() else {
+        return Vec::new();
+    };
+    map.iter()
+        .filter(|(_, v)| v.get("$error").is_some())
+        .map(|(name, v)| {
+            let name = short_name(name);
+            if v["$status"] == "missing" {
+                format!("{name} is not present")
+            } else {
+                format!(
+                    "{name} could not be read ({})",
+                    v["$error"].as_str().unwrap_or("unknown error")
+                )
+            }
+        })
+        .collect()
+}
+
+/// Print a batch of recorded/streamed events, one JSON value per line.
+/// Returns how many real events (not overflow markers) were printed.
+fn print_events(events: &[Value], short: bool) -> usize {
+    let mut n = 0;
+    for ev in events {
+        if let Some(dropped) = ev.get("$dropped") {
+            eprintln!("warning: {dropped} older event(s) were dropped (buffer overflow)");
+            continue;
+        }
+        let ev = if short {
+            shorten_value(ev.clone())
+        } else {
+            ev.clone()
+        };
+        println!("{}", serde_json::to_string(&ev).unwrap());
+        n += 1;
+    }
+    n
+}
+
+fn print_schedule(data: &Value, grep: Option<&str>, short: bool) {
+    let systems = data["systems"].as_array().cloned().unwrap_or_default();
+    let sets = data["system_sets"].as_array().cloned().unwrap_or_default();
+    let show = |s: &str| if short { short_name(s) } else { s.to_string() };
+    // A node is `{"System": i}` or `{"SystemSet": i}`.
+    let node_name = |node: &Value| -> Option<String> {
+        if let Some(i) = node["System"].as_u64() {
+            systems.get(i as usize)?["name"].as_str().map(show)
+        } else {
+            let name = sets.get(node["SystemSet"].as_u64()? as usize)?["name"].as_str()?;
+            // Every system has an implicit set named after it; show it as the system.
+            Some(show(name.strip_prefix("SystemTypeSet:").unwrap_or(name)))
+        }
+    };
+    let n = systems.len();
+    let (mut member_of, mut after, mut before) = (
+        vec![Vec::new(); n],
+        vec![Vec::new(); n],
+        vec![Vec::new(); n],
+    );
+    for edge in data["hierarchy"].as_array().into_iter().flatten() {
+        let (Some(set), Some(sys)) = (edge[0].as_u64(), edge[1]["System"].as_u64()) else {
+            continue;
+        };
+        if let Some(name) = sets.get(set as usize).and_then(|s| s["name"].as_str())
+            && !name.starts_with("SystemTypeSet:")
+            && let Some(slot) = member_of.get_mut(sys as usize)
+        {
+            slot.push(show(name));
+        }
+    }
+    for edge in data["dependency"].as_array().into_iter().flatten() {
+        if let (Some(i), Some(name)) = (edge[1]["System"].as_u64(), node_name(&edge[0]))
+            && let Some(slot) = after.get_mut(i as usize)
+        {
+            slot.push(name);
+        }
+        if let (Some(i), Some(name)) = (edge[0]["System"].as_u64(), node_name(&edge[1]))
+            && let Some(slot) = before.get_mut(i as usize)
+        {
+            slot.push(name);
+        }
+    }
+    let mut shown = 0;
+    for (i, sys) in systems.iter().enumerate() {
+        let name = sys["name"].as_str().unwrap_or("?");
+        if grep.is_some_and(|g| !name.contains(g)) {
+            continue;
+        }
+        shown += 1;
+        let mut line = show(name);
+        if sys["exclusive"].as_bool().unwrap_or(false) {
+            line.push_str("  [exclusive]");
+        }
+        for (label, list) in [
+            ("in", &member_of[i]),
+            ("after", &after[i]),
+            ("before", &before[i]),
+        ] {
+            if !list.is_empty() {
+                line.push_str(&format!("  {label}: {}", list.join(", ")));
+            }
+        }
+        println!("{line}");
+    }
+    let conflicts = data["conflicts"].as_array().map(Vec::len).unwrap_or(0);
+    println!(
+        "{shown} of {n} systems in {} (listing order is not run order; {conflicts} unordered \
+         access conflict(s), see --json)",
+        data["name"].as_str().unwrap_or("?")
+    );
 }
 
 fn ok(out: &Out) {
@@ -1226,5 +1654,40 @@ fn normalize_key(k: String) -> String {
             }
             k
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_json_keeps_flat_arrays_on_one_line_and_stays_valid() {
+        let v = json!({
+            "Transform": { "translation": [1.5, 2.0, 0.0], "tags": [] },
+            "Children": [[1, 2], {"a": "x\"y"}],
+            "Player": {},
+            "Health": 90.0,
+        });
+        let text = compact_json(&v);
+        assert!(text.contains("\"translation\": [1.5, 2.0, 0.0]"), "{text}");
+        assert!(text.contains("\"Player\": {}"), "{text}");
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), v);
+    }
+
+    #[test]
+    fn failed_components_reports_only_errors() {
+        let v = json!({
+            "a::Health": 1,
+            "a::Coin": {"$error": "not present", "$status": "missing"},
+            "a::Blob": {"$error": "cannot serialize", "$status": "unreadable_or_unknown"},
+        });
+        assert_eq!(
+            failed_components(&v),
+            [
+                "Blob could not be read (cannot serialize)",
+                "Coin is not present"
+            ]
+        );
     }
 }
