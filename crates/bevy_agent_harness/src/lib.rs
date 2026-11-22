@@ -48,6 +48,9 @@ pub mod testing;
 #[cfg(feature = "client")]
 pub mod client;
 
+#[cfg(feature = "cli")]
+pub mod share;
+
 pub use harness::AgentHarnessPlugin;
 pub use harness::headless::agent_plugins;
 pub use harness::logs::{LogBuffer, LogEntry, log_layer};

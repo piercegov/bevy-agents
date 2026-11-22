@@ -4,6 +4,7 @@ pub mod headless;
 pub mod input;
 pub mod logs;
 mod observe;
+pub mod record;
 pub mod screenshot;
 pub mod step;
 
@@ -23,7 +24,7 @@ use serde_json::{Value, json};
 ///
 /// | method | params | result |
 /// |---|---|---|
-/// | `harness.status` | – | frame, time, pause state, entity count, windows, cameras, process, headless, log_capture |
+/// | `harness.status` | – | frame, time, pause state, entity count, windows, cameras, process, headless, log_capture, recording |
 /// | `harness.exit` | – | null; the app exits after the current frame |
 /// | `harness.input` | `{ "actions": [Action, ...] }` | `{ "queued": n }` |
 /// | `harness.input.key` | `{ "key": "Space", "state": "tap"\|"press"\|"release", "hold_frames"?: 1 }` | `{ "queued": n }` |
@@ -40,6 +41,9 @@ use serde_json::{Value, json};
 /// | `harness.wait_frame+watch` | `{ "until_frame": n }` | status once the frame is reached |
 /// | `harness.screenshot` | `{ "path"?: "abs.png", "camera"?: entity, "window"?: entity }` | `{ "id": n }` |
 /// | `harness.screenshot.result+watch` | `{ "id": n }` | `{ "path" }` or `{ "png_base64", "width", "height" }` |
+/// | `harness.record.start` | `{ "path": "abs.mp4", "fps"?: 60, "max_seconds"?: 120, "camera"?: entity, "window"?: entity }` | `{ "path", "fps", "frames", "seconds" }` |
+/// | `harness.record.stop` | – | the recording's progress, or null if it had already stopped |
+/// | `harness.record.result+watch` | – | `{ "path", "width", "height", "fps", "frames", "seconds", "bytes" }` once the file is finished |
 pub struct AgentHarnessPlugin {
     /// Address the BRP HTTP server binds to. Default `127.0.0.1`.
     pub address: IpAddr,
@@ -107,7 +111,10 @@ impl Plugin for AgentHarnessPlugin {
                 .with_watching_method_main(
                     "harness.screenshot.result+watch",
                     screenshot::poll_result,
-                );
+                )
+                .with_method_main("harness.record.start", record::start_method)
+                .with_method_main("harness.record.stop", record::stop_method)
+                .with_watching_method_main("harness.record.result+watch", record::poll_result);
             app.add_plugins(remote);
             if self.http {
                 app.add_plugins(
@@ -123,7 +130,12 @@ impl Plugin for AgentHarnessPlugin {
         }
 
         logs::ensure_buffer(app, self.log_capacity);
-        app.add_plugins((input::plugin, step::plugin, screenshot::plugin));
+        app.add_plugins((
+            input::plugin,
+            step::plugin,
+            screenshot::plugin,
+            record::plugin,
+        ));
         app.insert_resource(ProcessInfo::capture());
         let headless = headless::setup(app);
 
@@ -202,6 +214,8 @@ impl ProcessInfo {
 
 /// `harness.exit` – ask the app to exit cleanly after the current frame.
 pub fn exit(In(_): In<Option<Value>>, world: &mut World) -> BrpResult {
+    // A video being recorded would otherwise be left unfinished and unplayable.
+    record::finish_blocking(world, std::time::Duration::from_secs(10));
     world.write_message(AppExit::Success);
     Ok(Value::Null)
 }
@@ -275,5 +289,8 @@ pub(crate) fn status_value(world: &mut World) -> Value {
         "process": world.get_resource::<ProcessInfo>().map(ProcessInfo::to_json),
         "headless": world.contains_resource::<headless::Headless>(),
         "log_capture": logs::capture_installed(),
+        "recording": world
+            .get_resource::<record::Recorder>()
+            .map(record::Recorder::status),
     })
 }

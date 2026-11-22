@@ -97,43 +97,50 @@ pub fn encode_png(rgba: &image::RgbaImage) -> Result<Vec<u8>, String> {
     Ok(buf.into_inner())
 }
 
+/// Pick what to capture: an explicit camera or window, else the headless
+/// offscreen image, else the primary window, else any camera rendering to an image.
+pub(crate) fn resolve_target(
+    world: &mut World,
+    camera: Option<u64>,
+    window: Option<u64>,
+) -> Result<RenderTarget, BrpError> {
+    if let Some(bits) = camera {
+        let entity =
+            Entity::try_from_bits(bits).ok_or_else(|| invalid_params("bad camera entity"))?;
+        return Ok(world
+            .get::<RenderTarget>(entity)
+            .cloned()
+            .unwrap_or_else(|| RenderTarget::Window(WindowRef::Primary)));
+    }
+    if let Some(bits) = window {
+        let entity =
+            Entity::try_from_bits(bits).ok_or_else(|| invalid_params("bad window entity"))?;
+        return Ok(RenderTarget::Window(WindowRef::Entity(entity)));
+    }
+    if let Some(offscreen) = world.get_resource::<super::headless::OffscreenTarget>() {
+        // Headless: the window has no surface; every window camera renders here.
+        return Ok(RenderTarget::Image(offscreen.0.clone().into()));
+    }
+    let has_primary = world
+        .query_filtered::<Entity, With<PrimaryWindow>>()
+        .iter(world)
+        .next()
+        .is_some();
+    if has_primary {
+        return Ok(RenderTarget::Window(WindowRef::Primary));
+    }
+    // Headless: pick the first active camera with an image target.
+    let mut q = world.query::<(&Camera, &RenderTarget)>();
+    q.iter(world)
+        .filter(|(c, _)| c.is_active)
+        .find_map(|(_, t)| matches!(t, RenderTarget::Image(_)).then(|| t.clone()))
+        .ok_or_else(|| invalid_params("no primary window and no camera rendering to an image"))
+}
+
 /// `harness.screenshot`
 pub fn request(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
     let p: ShotParams = parse_params(params)?;
-
-    let target: RenderTarget = if let Some(bits) = p.camera {
-        let entity =
-            Entity::try_from_bits(bits).ok_or_else(|| invalid_params("bad camera entity"))?;
-        world
-            .get::<RenderTarget>(entity)
-            .cloned()
-            .unwrap_or_else(|| RenderTarget::Window(WindowRef::Primary))
-    } else if let Some(bits) = p.window {
-        let entity =
-            Entity::try_from_bits(bits).ok_or_else(|| invalid_params("bad window entity"))?;
-        RenderTarget::Window(WindowRef::Entity(entity))
-    } else if let Some(offscreen) = world.get_resource::<super::headless::OffscreenTarget>() {
-        // Headless: the window has no surface; every window camera renders here.
-        RenderTarget::Image(offscreen.0.clone().into())
-    } else {
-        let has_primary = world
-            .query_filtered::<Entity, With<PrimaryWindow>>()
-            .iter(world)
-            .next()
-            .is_some();
-        if has_primary {
-            RenderTarget::Window(WindowRef::Primary)
-        } else {
-            // Headless: pick the first active camera with an image target.
-            let mut q = world.query::<(&Camera, &RenderTarget)>();
-            q.iter(world)
-                .filter(|(c, _)| c.is_active)
-                .find_map(|(_, t)| matches!(t, RenderTarget::Image(_)).then(|| t.clone()))
-                .ok_or_else(|| {
-                    invalid_params("no primary window and no camera rendering to an image")
-                })?
-        }
-    };
+    let target = resolve_target(world, p.camera, p.window)?;
 
     let store = world.resource::<ScreenshotStore>().clone();
     let id = store.allocate();

@@ -155,6 +155,26 @@ enum Cmd {
         #[arg(long)]
         window: Option<String>,
     },
+    /// Record a video of the game (needs ffmpeg on the game's machine).
+    ///
+    /// The video follows game time: while the game is paused nothing is added, and
+    /// `step N` adds exactly N frames of game time, so `pause`, `record start`,
+    /// inputs and `step`s, `record stop` gives a smooth clip with no dead time
+    /// however long you take between commands.
+    #[command(subcommand)]
+    Record(RecordCmd),
+    /// Serve a video or image over HTTP in the background and print a link that
+    /// shows it in a browser, e.g. `bevy-agent share demo.mp4 --bind tailscale`.
+    /// The server stops by itself once nobody has used it for a while.
+    Share {
+        /// The file: mp4, mov, mkv, webm, gif, png or jpg.
+        file: PathBuf,
+        #[command(flatten)]
+        share_args: ShareArgs,
+        /// Serve in this process instead of in the background.
+        #[arg(long)]
+        foreground: bool,
+    },
     /// Tap keys in sequence, e.g. `key Space` or `key KeyW KeyA`.
     Key {
         keys: Vec<String>,
@@ -253,6 +273,53 @@ enum Cmd {
     /// Print or install the bundled agent skill that teaches AI agents this workflow.
     #[command(subcommand)]
     Skill(SkillCmd),
+}
+
+#[derive(Subcommand)]
+enum RecordCmd {
+    /// Start recording. Fails if a recording is already running.
+    Start {
+        /// Output file (default demo.mp4). The extension picks the format:
+        /// .mp4, .mov, .mkv, .webm or .gif.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Video frames per second of game time (default 60).
+        #[arg(long)]
+        fps: Option<f64>,
+        /// Stop automatically after this many seconds of game time (default 120).
+        #[arg(long)]
+        max_seconds: Option<f64>,
+        /// Record what this camera renders.
+        #[arg(long)]
+        camera: Option<String>,
+        /// Record this window.
+        #[arg(long)]
+        window: Option<String>,
+    },
+    /// Stop recording, wait for the file to be finished and print where it is.
+    Stop {
+        /// Also serve the video (as `bevy-agent share` does) and print a link
+        /// that plays it in a browser.
+        #[arg(long)]
+        share: bool,
+        #[command(flatten)]
+        share_args: ShareArgs,
+    },
+}
+
+#[derive(Args)]
+struct ShareArgs {
+    /// Address to serve on: an IP address, or `tailscale` for this machine's
+    /// Tailscale address. The default, 127.0.0.1, is reachable from this machine
+    /// only; anyone who can reach the address can see the file.
+    #[arg(long, env = bevy_agent_harness::share::BIND_ENV, default_value = "127.0.0.1")]
+    bind: String,
+    /// Port to serve on (default: any free port).
+    #[arg(long)]
+    port: Option<u16>,
+    /// Stop serving after this many minutes without a request.
+    #[arg(long, default_value_t = 60.0)]
+    idle_minutes: f64,
 }
 
 #[derive(Subcommand)]
@@ -863,6 +930,77 @@ impl Out {
     }
 }
 
+impl ShareArgs {
+    fn idle(&self) -> Duration {
+        Duration::from_secs_f64(self.idle_minutes.clamp(0.1, 7.0 * 24.0 * 60.0) * 60.0)
+    }
+}
+
+struct ShareLink {
+    url: String,
+    pid: u32,
+    local_only: bool,
+    idle_minutes: f64,
+}
+
+impl ShareLink {
+    fn print(&self) {
+        println!(
+            "watch {}  (server pid {}, stops after {} min unused)",
+            self.url, self.pid, self.idle_minutes
+        );
+        if self.local_only {
+            println!(
+                "note: that address only works on this machine; for another device use \
+                 `--bind tailscale` (or an IP of this machine), or forward the port"
+            );
+        }
+    }
+}
+
+/// Start a background `bevy-agent share --foreground` for `file` and wait until it answers.
+fn share_file(file: &std::path::Path, args: &ShareArgs) -> Result<ShareLink> {
+    use bevy_agent_harness::share;
+    share::check(file)?;
+    let ip = share::resolve_bind(&args.bind)?;
+    let port = match args.port {
+        Some(port) => port,
+        None => share::free_port(ip)?,
+    };
+    if share::is_up(ip, port) {
+        bail!("port {port} is already in use; pick another with --port");
+    }
+    let mut cmd = std::process::Command::new(std::env::current_exe()?);
+    cmd.arg("share")
+        .arg(file)
+        .arg("--foreground")
+        .args(["--bind", &ip.to_string()])
+        .args(["--port", &port.to_string()])
+        .args(["--idle-minutes", &args.idle_minutes.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn().context("starting the share server")?;
+    let up = wait_until(Duration::from_secs(5), || {
+        share::is_up(ip, port) || matches!(child.try_wait(), Ok(Some(_)))
+    });
+    if !up || !share::is_up(ip, port) {
+        let _ = child.kill();
+        bail!("the share server did not start on {ip}:{port}");
+    }
+    Ok(ShareLink {
+        url: share::url(ip, port),
+        pid: child.id(),
+        local_only: ip.is_loopback(),
+        idle_minutes: args.idle_minutes,
+    })
+}
+
 fn run(cli: Cli) -> Result<()> {
     let client = BrpClient::new(cli.url.clone());
     let timeout = Duration::from_secs_f64(cli.timeout);
@@ -873,8 +1011,10 @@ fn run(cli: Cli) -> Result<()> {
 
     // Verifying against a process that predates the latest build is the easiest way
     // to "confirm" a change that is not running, so say so on every command.
-    if !matches!(cli.cmd, Cmd::Skill(_) | Cmd::Run { .. } | Cmd::Stop)
-        && let Ok(status) = client.status()
+    if !matches!(
+        cli.cmd,
+        Cmd::Skill(_) | Cmd::Run { .. } | Cmd::Stop | Cmd::Share { .. }
+    ) && let Ok(status) = client.status()
         && status["process"]["stale"] == true
     {
         eprintln!("warning: {STALE_WARNING}");
@@ -1165,6 +1305,105 @@ fn run(cli: Cli) -> Result<()> {
                     r["width"],
                     r["height"]
                 );
+            }
+        }
+        Cmd::Record(RecordCmd::Start {
+            out: path,
+            fps,
+            max_seconds,
+            camera,
+            window,
+        }) => {
+            let path = path.unwrap_or_else(|| PathBuf::from("demo.mp4"));
+            let abs = std::env::current_dir()?.join(&path);
+            let mut params = json!({ "path": abs });
+            if let Some(fps) = fps {
+                params["fps"] = json!(fps);
+            }
+            if let Some(max) = max_seconds {
+                params["max_seconds"] = json!(max);
+            }
+            if let Some(c) = camera {
+                params["camera"] = json!(entity_bits(&client, &c)?);
+            }
+            if let Some(w) = window {
+                params["window"] = json!(entity_bits(&client, &w)?);
+            }
+            let r = client.record_start(params)?;
+            if out.json {
+                out.value(r);
+            } else {
+                let paused = client.status()?["paused"].as_bool().unwrap_or(false);
+                println!(
+                    "recording to {} at {} fps{}",
+                    r["path"].as_str().unwrap_or(""),
+                    r["fps"],
+                    if paused {
+                        " (game is paused: `step` adds frames)"
+                    } else {
+                        ""
+                    }
+                );
+            }
+        }
+        Cmd::Record(RecordCmd::Stop { share, share_args }) => {
+            let mut r = client.record_stop(timeout.max(Duration::from_secs(120)))?;
+            let shared = match (share, r["path"].as_str()) {
+                (true, Some(path)) => Some(share_file(std::path::Path::new(path), &share_args)),
+                _ => None,
+            };
+            if let Some(Ok(link)) = &shared {
+                r["url"] = json!(link.url);
+            }
+            if out.json {
+                out.value(r);
+            } else {
+                let bytes = r["bytes"].as_f64().unwrap_or(0.0);
+                let size = if bytes >= 1e6 {
+                    format!("{:.1} MB", bytes / 1e6)
+                } else {
+                    format!("{:.0} kB", bytes / 1e3)
+                };
+                println!(
+                    "saved {} ({}x{}, {} frames, {:.1}s, {size})",
+                    r["path"].as_str().unwrap_or(""),
+                    r["width"],
+                    r["height"],
+                    r["frames"],
+                    r["seconds"].as_f64().unwrap_or(0.0),
+                );
+                if let Some(Ok(link)) = &shared {
+                    link.print();
+                }
+            }
+            // The video is saved either way; a failed share is still an error.
+            if let Some(Err(e)) = shared {
+                return Err(e.context("the video was saved but could not be shared"));
+            }
+        }
+        Cmd::Share {
+            file,
+            share_args,
+            foreground,
+        } => {
+            use bevy_agent_harness::share;
+            let file = std::env::current_dir()?.join(file);
+            if foreground {
+                let ip = share::resolve_bind(&share_args.bind)?;
+                let port = match share_args.port {
+                    Some(port) => port,
+                    None => share::free_port(ip)?,
+                };
+                share::check(&file)?;
+                eprintln!("serving {} at {}", file.display(), share::url(ip, port));
+                share::serve(&file, ip, port, share_args.idle())?;
+            } else {
+                let link = share_file(&file, &share_args)?;
+                if out.json {
+                    out.value(json!({ "url": link.url, "pid": link.pid, "path": file }));
+                } else {
+                    link.print();
+                }
             }
         }
         Cmd::Key {
@@ -1827,6 +2066,14 @@ fn print_status(s: &Value) {
             } else {
                 ""
             }
+        );
+    }
+    if s["recording"].is_object() {
+        println!(
+            "recording {}  {} frames ({:.1}s)",
+            s["recording"]["path"].as_str().unwrap_or(""),
+            s["recording"]["frames"],
+            s["recording"]["seconds"].as_f64().unwrap_or(0.0)
         );
     }
     if s["log_capture"] == false {

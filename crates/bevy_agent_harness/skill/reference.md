@@ -28,6 +28,9 @@ the raw protocol does not.
 | `harness.wait_frame+watch` | `{ until_frame: u32 }` | status, once `frame >= until_frame` |
 | `harness.screenshot` | `{ path?: string, camera?: entity, window?: entity }` | `{ id }` |
 | `harness.screenshot.result+watch` | `{ id }` | `{ path, width, height }` or `{ png_base64, width, height }` |
+| `harness.record.start` | `{ path: string, fps?: 60, max_seconds?: 120, camera?: entity, window?: entity }` | `{ path, fps, frames, seconds }` |
+| `harness.record.stop` | – | progress of the recording it stopped, or null |
+| `harness.record.result+watch` | – | `{ path, width, height, fps, frames, seconds, bytes }` once the file is finished |
 
 Timing notes:
 

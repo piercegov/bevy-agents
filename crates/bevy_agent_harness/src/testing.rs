@@ -133,6 +133,7 @@ impl TestAppBuilder {
                 self.width,
                 self.height,
             );
+            app.add_plugins(crate::harness::record::plugin);
             render = Some(RenderState { target: handle });
         } else {
             app.add_plugins((
@@ -643,6 +644,55 @@ impl TestApp {
         }
         img.save(path.as_ref()).expect("saving screenshot");
         img
+    }
+
+    /// Start recording the offscreen target to a video file (mp4, webm, gif, ...;
+    /// needs `ffmpeg`). Every frame advanced from here on becomes video at the
+    /// test's fixed `dt`. Requires [`TestApp::with_rendering`].
+    pub fn start_recording(&mut self, path: impl Into<PathBuf>) -> &mut Self {
+        let options = crate::harness::record::RecordOptions::new(path);
+        self.start_recording_with(options)
+    }
+
+    pub fn start_recording_with(
+        &mut self,
+        options: crate::harness::record::RecordOptions,
+    ) -> &mut Self {
+        let target = self
+            .render
+            .as_ref()
+            .map(|r| r.target.clone())
+            .expect("recording requires TestApp::with_rendering / builder().render(true)");
+        self.ensure_started();
+        crate::harness::record::start(self.app.world_mut(), target.into(), options)
+            .unwrap_or_else(|e| panic!("could not start recording: {e}"));
+        self
+    }
+
+    /// Finish the video and return its details (`path`, `width`, `height`,
+    /// `fps`, `frames`, `seconds`, `bytes`). Advances a few frames while the
+    /// last captures complete.
+    pub fn stop_recording(&mut self) -> serde_json::Value {
+        use crate::harness::record::Recorder;
+        let _capture_scope = self.capture.enter();
+        self.app.world_mut().resource_mut::<Recorder>().stop();
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let mut updates = 0;
+        loop {
+            if let Some(result) = self.app.world().resource::<Recorder>().result() {
+                return result.unwrap_or_else(|e| panic!("recording failed: {e}"));
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "recording did not finish within 60 s"
+            );
+            if updates < 8 {
+                updates += 1;
+                self.app.update();
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
     }
 
     /// Compare a screenshot to `tests/golden/<name>.png`.

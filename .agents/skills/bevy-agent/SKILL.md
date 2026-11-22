@@ -124,6 +124,40 @@ bevy-agent key space
 bevy-agent event read PlayerDamaged --expect   # prints the events; exit 1 if there were none
 ```
 
+## Recording a demo video
+
+When the user wants to see a change in action (or asks for a demo), record a short clip and
+give them the link (or the file path). Needs `ffmpeg` on the machine running the game.
+
+```sh
+bevy-agent pause
+bevy-agent record start -o /tmp/dash-demo.mp4   # .mp4, .mov, .mkv, .webm or .gif
+bevy-agent key --down d
+bevy-agent step 60                # one second of video
+bevy-agent key --up d
+bevy-agent key space
+bevy-agent step 90
+bevy-agent record stop --share    # prints the saved file and a `watch http://...` link
+bevy-agent resume
+```
+
+The video follows *game* time, one video frame per 1/60 s of it. While the game is paused
+nothing is added, so the time you spend between commands never shows up, and `step N` adds
+exactly N frames: script the demo with `pause` + `step` and it comes out smooth and
+repeatable. Without `pause` it records in real time, including every gap between your
+commands. Keep clips short (5 to 20 s) and show the feature being used, not just the result;
+a recording stops by itself after `--max-seconds` (default 120) of game time. Use
+`--fps 30` or a `.gif` name for something small enough to embed. `status` shows a running
+recording; stopping the game finishes the file first.
+
+`--share` starts a small background web server for that one file and prints a link to a page
+that plays it; pass the link on to the user. `bevy-agent share FILE` does the same for a video
+or screenshot you already have. By default the link only works on the machine running the
+command. If the user is on another device, add `--bind tailscale` (this machine's Tailscale
+address) or `--bind <ip>`; `BEVY_AGENT_SHARE_BIND` sets the default. Anyone who can reach
+that address can see the file, so do not bind wider than the user asked for. The server exits
+after 60 minutes without a request (`--idle-minutes`).
+
 ## Command cheatsheet
 
 | Need | Command |
@@ -144,6 +178,8 @@ bevy-agent event read PlayerDamaged --expect   # prints the events; exit 1 if th
 | Keyboard | `bevy-agent key space`, `key w a s d`, `key --down w`, `key --up w`, `key --hold 10 space` |
 | Mouse | `bevy-agent click 300 200`, `mouse move x y`, `mouse motion dx dy`, `mouse down|up`, `mouse scroll 1` |
 | Screenshot | `bevy-agent screenshot -o /tmp/shot.png` (then look at it) |
+| Demo video | `bevy-agent pause`, `record start -o /tmp/demo.mp4`, inputs + `step N`, `record stop --share` |
+| Link to a video or screenshot | `bevy-agent share /tmp/demo.mp4`, `share shot.png --bind tailscale` |
 | Logs | `bevy-agent logs`, `logs --level error`, `logs --grep collision`, `logs --follow`, `logs --clear` |
 | Time | `bevy-agent pause`, `resume`, `step 10`, `step 1 --dt 0.1`, `speed 0.25`, `wait 30` |
 | Stream changes | `bevy-agent watch @Player Transform` |
@@ -194,7 +230,8 @@ fn jump_leaves_the_ground() {
 - For headless physics that reads `AssetEvent<Mesh>`, call
   `app.with_app(|app| { app.init_asset::<Mesh>(); });` before dependent plugins and before
   populating assets. Add other asset types only as required; a renderer is unnecessary.
-- Visuals: `TestApp::with_rendering(640, 360)` then `screenshot()` or `assert_golden("name")`.
+- Visuals: `TestApp::with_rendering(640, 360)` then `screenshot()` or `assert_golden("name")`;
+  `start_recording("clip.mp4")` ... `stop_recording()` saves a video of the frames in between.
   UI is drawn and `click` reaches picking observers there; `Interaction` does not react (same
   limit as headless runs). Golden PNGs live in `tests/golden/`; the first run creates them, `UPDATE_GOLDEN=1` rewrites
   them, and a failure writes `tests/golden/__failures__/<name>.actual.png` and `.diff.png` for
@@ -214,8 +251,8 @@ in the game plugin under `cfg(test)` or accept the warnings in the log.
   (`Pointer<Click>` observers), `ButtonInput`, `Window::cursor_position()` and UI rendering all
   work. Headless runs at a steady 60 updates per second and needs a GPU or software Vulkan.
   To check `Interaction`-driven buttons, use a windowed `run`.
-- `screenshot -o` paths are resolved by the CLI to absolute paths, but the *game process* writes
-  the file, so it must be able to reach that path.
+- `screenshot -o` and `record start -o` paths are resolved by the CLI to absolute paths, but the
+  *game process* writes the file, so it must be able to reach that path.
 - `pause` freezes `Time<Virtual>`; systems still run every frame, so anything not driven by
   `Time` (or `FixedUpdate`) keeps going. Use `step` for controlled progress.
 - `ls` hides Bevy-internal entities and plumbing components, and a bare `get @Player` leaves

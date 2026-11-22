@@ -513,6 +513,20 @@ impl BrpClient {
         )
     }
 
+    /// Start recording a video on the game's machine. `params`: `path`
+    /// (mp4, mov, mkv, webm or gif) and optionally `fps`, `max_seconds`,
+    /// `camera`, `window`.
+    pub fn record_start(&self, params: Value) -> Result<Value> {
+        self.call("harness.record.start", Some(params))
+    }
+
+    /// Stop recording and block until the file is finished. Returns `path`,
+    /// `width`, `height`, `fps`, `frames`, `seconds` and `bytes`.
+    pub fn record_stop(&self, timeout: Duration) -> Result<Value> {
+        self.call("harness.record.stop", None)?;
+        self.watch_first("harness.record.result+watch", None, timeout)
+    }
+
     /// Screenshot as raw PNG bytes (never touches the game's filesystem).
     pub fn screenshot_png(&self, params: Value, timeout: Duration) -> Result<Vec<u8>> {
         use base64::Engine;

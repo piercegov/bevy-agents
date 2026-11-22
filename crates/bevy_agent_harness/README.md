@@ -70,6 +70,9 @@ bevy-agent key w --down / --up          hold / release
 bevy-agent click 300 200                move cursor and click (logical pixels, top-left origin)
 bevy-agent mouse move|motion|down|up|scroll
 bevy-agent screenshot -o shot.png       captured by the game's renderer, saved as PNG
+bevy-agent record start -o demo.mp4     record a video (needs ffmpeg); `record stop` finishes the file
+bevy-agent record stop --share          ...and print a link that plays it in a browser
+bevy-agent share demo.mp4               serve a video or screenshot; `--bind tailscale` for other devices
 bevy-agent logs --level warn --follow   captured log output (needs the LogPlugin line above)
 bevy-agent pause / resume / step 10     freeze Time<Virtual>; step advances 10 frames at fixed dt
 bevy-agent wait 30                      block until 30 more frames have run
@@ -150,6 +153,8 @@ fn title_screen_looks_right() {
 - `screenshot()`, `save_screenshot(path)`, `assert_golden(name)`, `assert_golden_with(name, GoldenOptions)`.
   Missing golden files are created on first run; `UPDATE_GOLDEN=1` rewrites them; failures write
   `tests/golden/__failures__/<name>.actual.png` and `.diff.png`.
+- `start_recording(path)`, `stop_recording()`: a video of the frames advanced in between
+  (rendering tests only, needs `ffmpeg`).
 
 Use ordinary `App`/`MinimalPlugins` tests for small rules. Use TestApp for scheduling,
 input, physics, and integration; launch the game only when live behavior or rendering
@@ -222,6 +227,17 @@ change, inspect state, inject input, or write gameplay tests.
 - Screenshots use Bevy's own `Screenshot` component. Because capture is asynchronous, the BRP flow
   is `harness.screenshot` (returns an id) followed by `harness.screenshot.result+watch`, which
   streams one response when the image is ready. The CLI hides this.
+- Video recording (`harness.record.start` / `.stop` / `.result+watch`) takes one `Screenshot` per
+  `1 / fps` seconds of `Time<Virtual>` and pipes the raw frames to an `ffmpeg` child process
+  (`BEVY_AGENT_FFMPEG` overrides the executable) on a background thread. Sampling by game time
+  means a paused game adds nothing, stepped frames come out evenly spaced however slow capture
+  is, and a slow real-time frame is repeated instead of speeding the video up. The file
+  extension picks the format: mp4/mov/mkv (H.264), webm (VP9) or gif.
+- `share` (and `record stop --share`) re-runs the CLI in the background as a small HTTP server
+  for one file: a player page at `/` and the file itself with Range support, which browsers
+  need for video. It binds to 127.0.0.1 unless told otherwise (`--bind <ip>` or
+  `--bind tailscale`, or `BEVY_AGENT_SHARE_BIND`), has no authentication, and exits after
+  `--idle-minutes` (default 60) without a request.
 - Logs are captured by a `tracing` layer into a process-global ring buffer; `harness.logs`
   supports `since`, `level`, `contains`, `target`, `limit`.
 - `TestApp::with_rendering` builds `DefaultPlugins` without winit and pipelined rendering, keeps a
