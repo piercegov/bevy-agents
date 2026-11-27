@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 /// | method | params | result |
 /// |---|---|---|
 /// | `harness.status` | – | frame, time, pause state, entity count, windows, cameras, process, headless, log_capture, recording |
+/// | `harness.entity_tree` | `{ "components"?: true }` | `[{ "entity", "name", "parent", "components"? }, ...]` |
 /// | `harness.exit` | – | null; the app exits after the current frame |
 /// | `harness.input` | `{ "actions": [Action, ...] }` | `{ "queued": n }` |
 /// | `harness.input.key` | `{ "key": "Space", "state": "tap"\|"press"\|"release", "hold_frames"?: 1 }` | `{ "queued": n }` |
@@ -96,6 +97,7 @@ impl Plugin for AgentHarnessPlugin {
                 .with_method_main("harness.events", observe::events)
                 .with_method_main("harness.types", observe::types)
                 .with_method_main("harness.status", status)
+                .with_method_main("harness.entity_tree", entity_tree)
                 .with_method_main("harness.exit", exit)
                 .with_method_main("harness.input", input::inject_batch)
                 .with_method_main("harness.input.key", input::inject_key)
@@ -221,6 +223,49 @@ pub fn exit(In(_): In<Option<Value>>, world: &mut World) -> BrpResult {
     record::finish_blocking(world, std::time::Duration::from_secs(10));
     world.write_message(AppExit::Success);
     Ok(Value::Null)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(default)]
+struct EntityTreeParams {
+    components: bool,
+}
+
+impl Default for EntityTreeParams {
+    fn default() -> Self {
+        Self { components: true }
+    }
+}
+
+/// `harness.entity_tree` – every entity's id, name, parent and (optionally) component
+/// names, gathered in one pass. The same data via `world.query` plus one
+/// `world.list_components` per entity costs a frame per entity, because the BRP server
+/// answers one request of a batch per frame.
+pub fn entity_tree(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let params: EntityTreeParams = parse_params(params)?;
+    let mut q = world.query::<(EntityRef, Option<&Name>, Option<&ChildOf>)>();
+    let mut out = Vec::new();
+    for (entity, name, child_of) in q.iter(world) {
+        let mut node = json!({
+            "entity": entity.id().to_bits(),
+            "name": name.map(|n| n.as_str()),
+            "parent": child_of.map(|c| c.parent().to_bits()),
+        });
+        if params.components {
+            // Same names `world.list_components` returns for an entity.
+            let mut names: Vec<String> = entity
+                .archetype()
+                .components()
+                .iter()
+                .filter_map(|&id| world.components().get_info(id))
+                .map(|info| info.name().to_string())
+                .collect();
+            names.sort_unstable();
+            node["components"] = json!(names);
+        }
+        out.push(node);
+    }
+    Ok(Value::Array(out))
 }
 
 /// `harness.status`

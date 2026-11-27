@@ -11,6 +11,7 @@ the raw protocol does not.
 | method | params | result |
 |---|---|---|
 | `harness.status` | none | `{ frame, fps, elapsed, real_elapsed, delta, paused, speed, stepping, entities, windows: [{entity, primary, width, height, physical_width, physical_height, scale_factor, cursor, focused}], cameras: [{entity, name, active, order, target, size}], process: {pid, exe, uptime, stale}, headless, log_capture }`. `stale` is true when the executable on disk is newer than the running process |
+| `harness.entity_tree` | `{ components?: true }` | `[{ entity, name, parent, components? }]` for every entity in one frame (`ls` uses it; a batch of `world.list_components` costs a frame per entity) |
 | `harness.exit` | none | `null`; the app exits cleanly after the current frame |
 | `harness.input.key` | `{ key?: KeyCode, keys?: [KeyCode], state?: "tap"\|"press"\|"release", hold_frames?: 1, delay?: 0 }` | `{ queued, horizon_frames }` |
 | `harness.input.mouse` | `{ button?: "Left", state?: "tap"\|"press"\|"release", position?: [x, y], hold_frames?, delay? }` | `{ queued, horizon_frames }` |

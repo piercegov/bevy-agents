@@ -440,31 +440,39 @@ impl BrpClient {
     }
 
     /// Entity hierarchy with names and (optionally) component lists.
+    ///
+    /// Uses `harness.entity_tree`, which answers in one frame. Games built against an
+    /// older harness fall back to `world.query` plus one `world.list_components` per
+    /// entity, which the server answers at one request per frame.
     pub fn entity_tree(&self, with_components: bool) -> Result<Vec<EntityNode>> {
-        let rows = self.query(
-            json!({ "option": [type_paths::NAME, type_paths::CHILD_OF] }),
-            json!({}),
-            false,
-        )?;
-        let mut nodes: BTreeMap<u64, EntityNode> = BTreeMap::new();
-        for row in &rows {
-            let Some(id) = row["entity"].as_u64() else {
-                continue;
-            };
-            let comps = &row["components"];
-            let name = comps[type_paths::NAME].as_str().map(String::from);
-            let parent = comps[type_paths::CHILD_OF].as_u64();
-            nodes.insert(
-                id,
-                EntityNode {
-                    id,
-                    name,
-                    parent,
-                    children: Vec::new(),
-                    components: Vec::new(),
-                },
-            );
-        }
+        let rows = match self.call(
+            "harness.entity_tree",
+            Some(json!({ "components": with_components })),
+        ) {
+            Ok(v) => serde_json::from_value::<Vec<TreeRow>>(v)?,
+            Err(e)
+                if e.downcast_ref::<RpcError>()
+                    .is_some_and(|e| e.code == METHOD_NOT_FOUND) =>
+            {
+                self.entity_tree_rows_slow(with_components)?
+            }
+            Err(e) => return Err(e),
+        };
+        let mut nodes: BTreeMap<u64, EntityNode> = rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.entity,
+                    EntityNode {
+                        id: r.entity,
+                        name: r.name,
+                        parent: r.parent,
+                        children: Vec::new(),
+                        components: r.components,
+                    },
+                )
+            })
+            .collect();
         let ids: Vec<u64> = nodes.keys().copied().collect();
         for id in &ids {
             if let Some(parent) = nodes[id].parent
@@ -473,24 +481,44 @@ impl BrpClient {
                 p.children.push(*id);
             }
         }
+        Ok(nodes.into_values().collect())
+    }
+
+    fn entity_tree_rows_slow(&self, with_components: bool) -> Result<Vec<TreeRow>> {
+        let rows = self.query(
+            json!({ "option": [type_paths::NAME, type_paths::CHILD_OF] }),
+            json!({}),
+            false,
+        )?;
+        let mut out: Vec<TreeRow> = rows
+            .iter()
+            .filter_map(|row| {
+                let comps = &row["components"];
+                Some(TreeRow {
+                    entity: row["entity"].as_u64()?,
+                    name: comps[type_paths::NAME].as_str().map(String::from),
+                    parent: comps[type_paths::CHILD_OF].as_u64(),
+                    components: Vec::new(),
+                })
+            })
+            .collect();
         if with_components {
-            let calls = ids
+            let calls = out
                 .iter()
-                .map(|id| {
+                .map(|r| {
                     (
                         "world.list_components".to_string(),
-                        Some(json!({ "entity": id })),
+                        Some(json!({ "entity": r.entity })),
                     )
                 })
                 .collect();
-            for (id, result) in ids.iter().zip(self.call_batch(calls)?) {
+            for (row, result) in out.iter_mut().zip(self.call_batch(calls)?) {
                 if let Ok(v) = result {
-                    let list: Vec<String> = serde_json::from_value(v).unwrap_or_default();
-                    nodes.get_mut(id).unwrap().components = list;
+                    row.components = serde_json::from_value(v).unwrap_or_default();
                 }
             }
         }
-        Ok(nodes.into_values().collect())
+        Ok(out)
     }
 
     // ---- harness.* -------------------------------------------------------
@@ -609,6 +637,19 @@ impl BrpClient {
         let until = status["until_frame"].as_u64().unwrap_or(0) as u32;
         self.wait_until_frame(until, timeout)
     }
+}
+
+/// JSON-RPC "method not found".
+const METHOD_NOT_FOUND: i64 = -32601;
+
+/// One row of `harness.entity_tree`.
+#[derive(Deserialize)]
+struct TreeRow {
+    entity: u64,
+    name: Option<String>,
+    parent: Option<u64>,
+    #[serde(default)]
+    components: Vec<String>,
 }
 
 /// One entity in the hierarchy returned by [`BrpClient::entity_tree`].

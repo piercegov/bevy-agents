@@ -120,3 +120,45 @@ fn run_until_and_names() {
     let player = app.find_by_name("Player").unwrap();
     assert!(app.component_names(player).contains(&"Health".to_string()));
 }
+
+#[test]
+fn entity_tree_lists_names_parents_and_components() {
+    let mut app = TestApp::new();
+    app.add_plugins(game);
+    app.advance(1);
+    let player = app.find_by_name("Player").unwrap();
+    let child = app.world_mut().spawn((Name::new("Sword"), ChildOf(player))).id();
+    let rows = app
+        .world_mut()
+        .run_system_cached_with(bevy_agent_harness::harness::entity_tree, None)
+        .unwrap()
+        .unwrap();
+    let rows = rows.as_array().unwrap();
+    let row = |e: Entity| {
+        rows.iter()
+            .find(|r| r["entity"] == e.to_bits())
+            .unwrap_or_else(|| panic!("{e} missing from {rows:?}"))
+    };
+    assert_eq!(row(player)["name"], "Player");
+    assert!(row(player)["parent"].is_null());
+    assert_eq!(row(child)["name"], "Sword");
+    assert_eq!(row(child)["parent"], player.to_bits());
+    let comps: Vec<&str> = row(player)["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert!(comps.iter().any(|c| c.ends_with("::Health")), "{comps:?}");
+    assert!(comps.is_sorted());
+
+    let rows = app
+        .world_mut()
+        .run_system_cached_with(
+            bevy_agent_harness::harness::entity_tree,
+            Some(serde_json::json!({ "components": false })),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(rows[0].get("components").is_none());
+}
